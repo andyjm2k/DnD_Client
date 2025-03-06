@@ -1,0 +1,179 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String     @id @default(uuid())
+  username        String     @unique
+  email           String     @unique
+  password        String
+  displayName     String?
+  avatar          String?
+  bio            String?
+  theme           String     @default("light")
+  notifications   Boolean    @default(true)
+  campaignsCreated Int      @default(0)
+  campaignsPlayed Int       @default(0)
+  charactersCreated Int     @default(0)
+  totalPlayTime   Int       @default(0)
+  roles           String    @default("player")
+  lastActive      DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  characters      Character[]
+  campaigns       Campaign[]
+  campaignPlayers CampaignPlayer[]
+}
+
+model Character {
+  id              String    @id @default(uuid())
+  userId          String
+  name            String
+  race            String
+  class           String
+  level           Int       @default(1)
+  background      String
+  alignment       String
+  strength        Int
+  dexterity       Int
+  constitution    Int
+  intelligence    Int
+  wisdom          Int
+  charisma        Int
+  maxHitPoints    Int
+  currentHitPoints Int
+  armorClass      Int
+  proficiencies   CharacterProficiency[]
+  equipment       Equipment[]
+  spells          Spell[]
+  features        Feature[]
+  backstory       String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id])
+  campaigns       Campaign[]
+  campaignPlayers CampaignPlayer[]
+}
+
+model CharacterProficiency {
+  id          String    @id @default(uuid())
+  characterId String
+  type        String    // skills, savingThrows, tools, languages
+  name        String
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+}
+
+model Equipment {
+  id          String    @id @default(uuid())
+  characterId String
+  item        String
+  quantity    Int
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+}
+
+model Spell {
+  id          String    @id @default(uuid())
+  characterId String
+  name        String
+  level       Int
+  description String
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+}
+
+model Feature {
+  id          String    @id @default(uuid())
+  characterId String
+  name        String
+  description String
+  source      String
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+}
+
+model Campaign {
+  id              String    @id @default(uuid())
+  title           String
+  setting         String
+  tone            String
+  description     String
+  systemPrompt    String    @default("You are a D&D 5E Dungeon Master helping to test the system. Keep responses brief but helpful.")
+  status          String    @default("active")
+  currentLocation String?
+  locationDesc    String?
+  currentQuest    String?
+  questDesc       String?
+  objectives      String?
+  aiDmSettings    AIDungeonMaster?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  player          User      @relation(fields: [playerId], references: [id])
+  playerId        String
+  character       Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  characterId     String
+  npcs            NPC[]
+  chatHistory     ChatMessage[]
+  gameState       GameState?
+  campaignPlayers CampaignPlayer[]
+}
+
+model CampaignPlayer {
+  id          String    @id @default(uuid())
+  campaignId  String
+  userId      String
+  characterId String
+  joinedAt    DateTime  @default(now())
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id])
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+}
+
+model NPC {
+  id          String    @id @default(uuid())
+  campaignId  String
+  name        String
+  description String
+  role        String
+  location    String
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+}
+
+model ChatMessage {
+  id          String    @id @default(uuid())
+  campaignId  String
+  speaker     String    // "player" or "dm"
+  message     String
+  type        String    // "narrative", "dialog", "action", "combat", "system"
+  timestamp   DateTime  @default(now())
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  metadataStr String?   // JSON string for metadata since SQLite doesn't support JSON
+}
+
+model GameState {
+  id              String    @id @default(uuid())
+  campaignId      String    @unique
+  currentScene    String?
+  lastAction      String?
+  combatActive    Boolean   @default(false)
+  initiativeOrder String?   // JSON string of initiative order
+  campaign        Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+}
+
+model AIDungeonMaster {
+  id              String    @id @default(uuid())
+  campaignId      String    @unique
+  campaign        Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  model           String    @default("gpt-4")
+  temperature     Float     @default(0.7)
+  personality     String    // DM's personality traits
+  style           String    // Narrative style
+  difficulty      String    @default("medium")
+  systemPrompt    String    // Base system prompt for the AI DM
+  contextWindow   Int       @default(5) // Number of previous messages to include
+  rulesEnforcement String   @default("moderate") // strict, moderate, or flexible
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+} 
