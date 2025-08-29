@@ -8,26 +8,46 @@ datasource db {
 }
 
 model User {
-  id              String     @id @default(uuid())
-  username        String     @unique
-  email           String     @unique
-  password        String
-  displayName     String?
-  avatar          String?
-  bio            String?
-  theme           String     @default("light")
-  notifications   Boolean    @default(true)
-  campaignsCreated Int      @default(0)
-  campaignsPlayed Int       @default(0)
-  charactersCreated Int     @default(0)
-  totalPlayTime   Int       @default(0)
-  roles           String    @default("player")
-  lastActive      DateTime  @default(now())
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  characters      Character[]
-  campaigns       Campaign[]
-  campaignPlayers CampaignPlayer[]
+  id                        String          @id @default(uuid())
+  username                  String          @unique
+  email                     String          @unique
+  password                  String
+  displayName               String?
+  avatar                    String?
+  bio                      String?
+  theme                     String          @default("light")
+  notifications             Boolean         @default(true)
+  campaignsCreated          Int             @default(0)
+  campaignsPlayed           Int             @default(0)
+  charactersCreated         Int             @default(0)
+  totalPlayTime             Int             @default(0)
+  roles                     String          @default("player")
+  lastActive                DateTime        @default(now())
+  createdAt                 DateTime        @default(now())
+  updatedAt                 DateTime        @updatedAt
+
+  // Authentication fields
+  emailVerified             Boolean         @default(false)
+  emailVerificationToken    String?
+  emailVerificationExpires  DateTime?
+  passwordResetToken        String?
+  passwordResetExpires      DateTime?
+  twoFactorEnabled          Boolean         @default(false)
+  twoFactorSecret           String?
+  backupCodes               String?         // JSON array of backup codes
+  loginCount                Int             @default(0)
+  lastLoginAt               DateTime?
+  failedLoginAttempts       Int             @default(0)
+  lockoutUntil              DateTime?
+  accountStatus             String          @default("active") // active, suspended, banned
+
+  // Relations
+  characters                Character[]
+  campaigns                 Campaign[]
+  campaignPlayers           CampaignPlayer[]
+  sessions                  UserSession[]
+  campaignPermissions       CampaignPermission[]
+  auditLogs                 AuditLog[]
 }
 
 model Character {
@@ -118,6 +138,7 @@ model Campaign {
   chatHistory     ChatMessage[]
   gameState       GameState?
   campaignPlayers CampaignPlayer[]
+  permissions     CampaignPermission[]
 }
 
 model CampaignPlayer {
@@ -176,4 +197,60 @@ model AIDungeonMaster {
   rulesEnforcement String   @default("moderate") // strict, moderate, or flexible
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+}
+
+model UserSession {
+  id            String   @id @default(uuid())
+  userId        String
+  token         String   @unique
+  deviceInfo    String   // JSON string containing device information
+  ipAddress     String
+  userAgent     String
+  expiresAt     DateTime
+  lastActivityAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CampaignPermission {
+  id          String   @id @default(uuid())
+  campaignId  String
+  userId      String
+  role        String   // owner, dm, player, spectator
+  permissions String   // JSON array of specific permissions
+  grantedBy   String
+  grantedAt   DateTime @default(now())
+  expiresAt   DateTime?
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, userId])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?
+  action      String   // login, logout, password_change, profile_update, etc.
+  resource    String?  // campaign, character, user, etc.
+  resourceId  String?
+  details     String?  // JSON string with additional details
+  ipAddress   String
+  userAgent   String
+  success     Boolean  @default(true)
+  errorMessage String?
+  createdAt   DateTime @default(now())
+
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+model RateLimit {
+  id        String   @id @default(uuid())
+  key       String   @unique // IP address or user ID
+  endpoint  String   // API endpoint being rate limited
+  attempts  Int      @default(0)
+  resetAt   DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 } 
