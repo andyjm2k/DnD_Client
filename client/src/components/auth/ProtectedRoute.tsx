@@ -25,8 +25,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     user,
     isAuthenticated,
     isLoading,
-    checkPermission,
-    checkPermissions
+    checkPermission
   } = useAuth();
 
   const location = useLocation();
@@ -39,6 +38,34 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     hasAccess: true,
     error: null
   });
+
+  // Permission check effect - must be called before any conditional returns
+  useEffect(() => {
+    const checkAccess = async () => {
+      if (!requiredPermission || !campaignId || !isAuthenticated) {
+        setPermissionCheck({ loading: false, hasAccess: true, error: null });
+        return;
+      }
+
+      try {
+        setPermissionCheck({ loading: true, hasAccess: false, error: null });
+        const result = await checkPermission(campaignId, requiredPermission);
+        setPermissionCheck({
+          loading: false,
+          hasAccess: result.hasPermission,
+          error: null
+        });
+      } catch (error) {
+        setPermissionCheck({
+          loading: false,
+          hasAccess: false,
+          error: 'Failed to check permissions'
+        });
+      }
+    };
+
+    checkAccess();
+  }, [requiredPermission, campaignId, isAuthenticated, checkPermission]);
 
   // Handle authentication check
   if (isLoading) {
@@ -66,34 +93,6 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
       return <Navigate to={fallbackPath} replace />;
     }
   }
-
-  // Check permission requirement
-  useEffect(() => {
-    const checkAccess = async () => {
-      if (!requiredPermission || !campaignId || !isAuthenticated) {
-        setPermissionCheck({ loading: false, hasAccess: true, error: null });
-        return;
-      }
-
-      try {
-        setPermissionCheck({ loading: true, hasAccess: false, error: null });
-        const result = await checkPermission(campaignId, requiredPermission);
-        setPermissionCheck({
-          loading: false,
-          hasAccess: result.hasPermission,
-          error: null
-        });
-      } catch (error) {
-        setPermissionCheck({
-          loading: false,
-          hasAccess: false,
-          error: 'Failed to check permissions'
-        });
-      }
-    };
-
-    checkAccess();
-  }, [requiredPermission, campaignId, isAuthenticated, checkPermission]);
 
   // Show loading while checking permissions
   if (permissionCheck.loading) {
