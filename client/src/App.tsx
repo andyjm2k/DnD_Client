@@ -15,7 +15,6 @@ import CampaignList from './pages/CampaignList';
 const AppContent: React.FC = () => {
   const { user, logout, isAuthenticated } = useAuth();
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
-  const [resetToken, setResetToken] = useState<string>('');
 
   // Handle successful authentication
   const handleAuthSuccess = () => {

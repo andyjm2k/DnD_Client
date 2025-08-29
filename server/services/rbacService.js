@@ -137,6 +137,9 @@ class RBACService {
       }
     } catch (error) {
       console.error('Error assigning role:', error);
+      if (error.message.includes('Invalid role')) {
+        throw error;
+      }
       throw new Error('Failed to assign role');
     }
   }
@@ -156,6 +159,9 @@ class RBACService {
       });
     } catch (error) {
       console.error('Error removing role:', error);
+      if (error.code === 'P2025') { // Record not found
+        return null;
+      }
       throw new Error('Failed to remove role');
     }
   }
@@ -346,6 +352,9 @@ class RBACService {
       return true;
     } catch (error) {
       console.error('Error transferring ownership:', error);
+      if (error.message.includes('Current user is not the campaign owner')) {
+        throw error;
+      }
       throw new Error('Failed to transfer ownership');
     }
   }
