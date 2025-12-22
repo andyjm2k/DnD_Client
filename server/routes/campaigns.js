@@ -6,6 +6,185 @@ const llmService = require('../services/llmService');
 const router = express.Router();
 const prisma = new PrismaClient();
 
+const CAMPAIGN_MARKERS = [
+  'Current Quest',
+  'Quest',
+  'Objective',
+  'Objectives',
+  'Reward',
+  'Rewards',
+  'Loot',
+  'Treasure'
+];
+
+const CAMPAIGN_SECTION_REGEX = new RegExp(
+  `(?:\\*\\*)?(${CAMPAIGN_MARKERS.join('|')})(?:\\*\\*)?:\\s*([\\s\\S]*?)(?=(?:\\*\\*)?(?:${CAMPAIGN_MARKERS.join('|')})(?:\\*\\*)?:|$)`,
+  'gi'
+);
+
+const parseJsonLog = (value) => {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+};
+
+const splitListEntries = (value) => {
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+
+  const bulletPattern = /(?:^|\n)\s*(?:[-*•]|\d+\.)\s+/;
+  if (bulletPattern.test(trimmed)) {
+    return trimmed
+      .split(/\n\s*(?:[-*•]|\d+\.)\s+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+
+  if (trimmed.includes('\n')) {
+    return trimmed
+      .split('\n')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+
+  if (trimmed.includes(';')) {
+    return trimmed
+      .split(';')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+
+  return [trimmed];
+};
+
+const extractCampaignMentions = (message) => {
+  const updates = {
+    questTitle: '',
+    questDescription: '',
+    objectives: [],
+    loot: []
+  };
+
+  const cleanedMessage = message.replace(/\r/g, '').trim();
+  if (!cleanedMessage) {
+    return updates;
+  }
+
+  CAMPAIGN_SECTION_REGEX.lastIndex = 0;
+
+  let match;
+  while ((match = CAMPAIGN_SECTION_REGEX.exec(cleanedMessage)) !== null) {
+    const marker = match[1].toLowerCase();
+    const value = match[2]?.trim() || '';
+
+    if (!value) {
+      continue;
+    }
+
+    if (marker.includes('quest')) {
+      const lines = value.split('\n').map((line) => line.trim()).filter(Boolean);
+      updates.questTitle = lines[0] || value;
+      updates.questDescription = lines.slice(1).join('\n').trim();
+    } else if (marker.includes('objective')) {
+      updates.objectives.push(...splitListEntries(value));
+    } else if (marker.includes('reward') || marker.includes('loot') || marker.includes('treasure')) {
+      updates.loot.push(...splitListEntries(value));
+    }
+  }
+
+  return updates;
+};
+
+const applyCampaignUpdates = async (campaign, updates) => {
+  const now = new Date().toISOString();
+  const questLog = parseJsonLog(campaign.questLog);
+  const objectiveLog = parseJsonLog(campaign.objectiveLog);
+  const lootLog = parseJsonLog(campaign.lootLog);
+  const data = {};
+
+  let hasUpdates = false;
+  let questLogChanged = false;
+  let objectiveLogChanged = false;
+  let lootLogChanged = false;
+
+  if (updates.questTitle) {
+    data.currentQuest = updates.questTitle;
+    if (updates.questDescription) {
+      data.questDesc = updates.questDescription;
+    }
+    hasUpdates = true;
+
+    const existingQuest = questLog.find(
+      (entry) => entry.title?.toLowerCase() === updates.questTitle.toLowerCase()
+    );
+    if (!existingQuest) {
+      questLog.push({
+        title: updates.questTitle,
+        description: updates.questDescription || '',
+        identifiedAt: now
+      });
+      questLogChanged = true;
+    }
+  }
+
+  if (updates.objectives.length > 0) {
+    data.objectives = updates.objectives.join('\n');
+    hasUpdates = true;
+
+    updates.objectives.forEach((objective) => {
+      const exists = objectiveLog.some(
+        (entry) => entry.text?.toLowerCase() === objective.toLowerCase()
+      );
+      if (!exists) {
+        objectiveLog.push({
+          text: objective,
+          identifiedAt: now
+        });
+        objectiveLogChanged = true;
+      }
+    });
+  }
+
+  if (updates.loot.length > 0) {
+    updates.loot.forEach((item) => {
+      const exists = lootLog.some(
+        (entry) => entry.text?.toLowerCase() === item.toLowerCase()
+      );
+      if (!exists) {
+        lootLog.push({
+          text: item,
+          identifiedAt: now
+        });
+        lootLogChanged = true;
+      }
+    });
+    hasUpdates = true;
+  }
+
+  if (questLogChanged) {
+    data.questLog = JSON.stringify(questLog);
+  }
+  if (objectiveLogChanged) {
+    data.objectiveLog = JSON.stringify(objectiveLog);
+  }
+  if (lootLogChanged) {
+    data.lootLog = JSON.stringify(lootLog);
+  }
+
+  if (!hasUpdates) {
+    return;
+  }
+
+  await prisma.campaign.update({
+    where: { id: campaign.id },
+    data
+  });
+};
+
 // Create a new campaign
 router.post('/', auth, async (req, res) => {
   try {
@@ -261,6 +440,9 @@ router.post('/:id/action', auth, async (req, res) => {
       }
     });
 
+    const actionUpdates = extractCampaignMentions(dmResponse.message);
+    await applyCampaignUpdates(campaign, actionUpdates);
+
     // Update game state if needed
     if (action.type === 'combat_action' || dmResponse.type === 'combat') {
       await prisma.gameState.update({
@@ -338,6 +520,9 @@ router.post('/:id/chat', auth, async (req, res) => {
         metadataStr: JSON.stringify({ rolls: dmResponse.rolls })
       }
     });
+
+    const chatUpdates = extractCampaignMentions(dmResponse.message);
+    await applyCampaignUpdates(campaign, chatUpdates);
 
     // Add metadata to the response
     const responseMessages = [
