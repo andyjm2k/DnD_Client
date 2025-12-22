@@ -11,6 +11,9 @@ const CharacterSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  portrait: {
+    type: String
+  },
   race: {
     type: String,
     required: true
