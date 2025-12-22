@@ -13,6 +13,9 @@ export interface Campaign {
   currentQuest: string;
   questDesc: string;
   objectives: string;
+  questLog?: string | null;
+  objectiveLog?: string | null;
+  lootLog?: string | null;
   playerId: string;
   characterId: string;
   character: Character;
@@ -22,6 +25,17 @@ export interface Campaign {
   chatHistory: ChatMessage[];
   gameState?: GameState;
   aiDmSettings: AIDungeonMaster;
+}
+
+export interface QuestLogEntry {
+  title: string;
+  description?: string;
+  identifiedAt: string;
+}
+
+export interface CampaignTextLogEntry {
+  text: string;
+  identifiedAt: string;
 }
 
 export interface NPC {

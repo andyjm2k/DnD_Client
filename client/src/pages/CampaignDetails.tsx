@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Campaign, ChatMessage } from '../types/campaign';
+import { Campaign, ChatMessage, CampaignTextLogEntry, QuestLogEntry } from '../types/campaign';
 import { campaignService } from '../services/campaignService';
 
 // Dice presets for quick rolling
@@ -14,6 +14,30 @@ const DICE_PRESETS = [
   { label: '2d6', notation: '2d6' },
   { label: '3d6', notation: '3d6' }
 ];
+
+const parseJsonLog = <T,>(value?: string | null): T[] => {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+};
+
+const parseObjectives = (objectives: string | null | undefined) => {
+  if (!objectives) {
+    return [];
+  }
+
+  return objectives
+    .split('\n')
+    .map((entry) => entry.replace(/^[\s-*•]+/, '').trim())
+    .filter(Boolean);
+};
 
 const CampaignDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -262,6 +286,11 @@ const CampaignDetails: React.FC = () => {
     );
   }
 
+  const questLog = parseJsonLog<QuestLogEntry>(campaign.questLog);
+  const objectiveLog = parseJsonLog<CampaignTextLogEntry>(campaign.objectiveLog);
+  const lootLog = parseJsonLog<CampaignTextLogEntry>(campaign.lootLog);
+  const currentObjectives = parseObjectives(campaign.objectives);
+
   return (
     <div className="max-w-4xl mx-auto p-6">
       <div className="bg-white shadow-lg rounded-lg overflow-hidden">
@@ -299,7 +328,62 @@ const CampaignDetails: React.FC = () => {
           {/* Objectives */}
           <div>
             <h2 className="text-xl font-semibold mb-2">Objectives</h2>
-            <p className="text-gray-700">{campaign.objectives}</p>
+            {currentObjectives.length > 0 ? (
+              <ul className="list-disc list-inside text-gray-700 space-y-1">
+                {currentObjectives.map((objective, index) => (
+                  <li key={`${objective}-${index}`}>{objective}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-gray-500">No objectives tracked yet.</p>
+            )}
+          </div>
+
+          {/* Quest Log */}
+          <div>
+            <h2 className="text-xl font-semibold mb-2">Quest Log</h2>
+            {questLog.length > 0 ? (
+              <div className="space-y-3">
+                {questLog.map((entry, index) => (
+                  <div key={`${entry.title}-${index}`} className="border rounded-lg p-3">
+                    <h3 className="font-medium text-indigo-600">{entry.title}</h3>
+                    {entry.description && (
+                      <p className="text-gray-700 mt-1">{entry.description}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-500">No quests recorded yet.</p>
+            )}
+          </div>
+
+          {/* Objective History */}
+          <div>
+            <h2 className="text-xl font-semibold mb-2">Objective History</h2>
+            {objectiveLog.length > 0 ? (
+              <ul className="list-disc list-inside text-gray-700 space-y-1">
+                {objectiveLog.map((entry, index) => (
+                  <li key={`${entry.text}-${index}`}>{entry.text}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-gray-500">No objective history yet.</p>
+            )}
+          </div>
+
+          {/* Loot Log */}
+          <div>
+            <h2 className="text-xl font-semibold mb-2">Loot Log</h2>
+            {lootLog.length > 0 ? (
+              <ul className="list-disc list-inside text-gray-700 space-y-1">
+                {lootLog.map((entry, index) => (
+                  <li key={`${entry.text}-${index}`}>{entry.text}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-gray-500">No loot tracked yet.</p>
+            )}
           </div>
 
           {/* NPCs */}
