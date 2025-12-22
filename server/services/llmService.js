@@ -290,6 +290,30 @@ Current Quest: ${campaign.currentQuest}
 Combat Active: ${campaign.gameState.combatActive}
 ${campaign.gameState.combatActive ? `Initiative Order: ${campaign.gameState.initiativeOrder}` : ''}`;
 
+    const questLog = this._parseJsonLog(campaign.questLog);
+    const objectiveLog = this._parseJsonLog(campaign.objectiveLog);
+    const lootLog = this._parseJsonLog(campaign.lootLog);
+
+    if (questLog.length > 0) {
+      const questSummary = questLog.slice(-5).map((entry) => {
+        if (entry.description) {
+          return `- ${entry.title}: ${entry.description}`;
+        }
+        return `- ${entry.title}`;
+      }).join('\n');
+      contextStr += `\nQuest Log:\n${questSummary}`;
+    }
+
+    if (objectiveLog.length > 0) {
+      const objectiveSummary = objectiveLog.slice(-8).map((entry) => `- ${entry.text}`).join('\n');
+      contextStr += `\nObjective Log:\n${objectiveSummary}`;
+    }
+
+    if (lootLog.length > 0) {
+      const lootSummary = lootLog.slice(-8).map((entry) => `- ${entry.text}`).join('\n');
+      contextStr += `\nLoot Log:\n${lootSummary}`;
+    }
+
     // Add dice roll results if present
     if (context.diceRolls && context.diceRolls.length > 0) {
       contextStr += '\nDice Rolls: ' + context.diceRolls.map(roll => 
@@ -382,6 +406,16 @@ Conditions: ${context.conditions || 'none'}`;
       message: processedMessage,
       rolls: rolls
     };
+  }
+
+  _parseJsonLog(value) {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      return [];
+    }
   }
 
   async generateCampaign(theme, settings) {
