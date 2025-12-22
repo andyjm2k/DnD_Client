@@ -96,6 +96,9 @@ const CampaignDetails: React.FC = () => {
       
       // Clear the input
       setPlayerMessage('');
+
+      // Reload campaign details to reflect any new quest/objective/loot updates
+      loadCampaign();
       
     } catch (err) {
       console.error('Error sending message:', err);
