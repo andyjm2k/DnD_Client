@@ -16,14 +16,14 @@ const rateLimit = (maxAttempts = 5, windowMinutes = 15, useUserId = false) => {
       const windowStart = new Date(now.getTime() - (windowMinutes * 60 * 1000));
 
       // Determine the key for rate limiting
+      const endpoint = req.originalUrl || req.url;
       let key;
       if (useUserId && req.user?.id) {
         key = `user_${req.user.id}`;
       } else {
         key = `ip_${req.ip || req.connection.remoteAddress || req.socket.remoteAddress}`;
       }
-
-      const endpoint = req.originalUrl || req.url;
+      key = `${key}_${endpoint}`;
 
       // Get or create rate limit record
       let rateLimitRecord = await prisma.rateLimit.findUnique({
