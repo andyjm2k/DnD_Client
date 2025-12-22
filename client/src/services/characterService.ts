@@ -5,6 +5,7 @@ const API_URL = '/api/characters';
 
 interface ServerCharacterData {
   name: string;
+  portrait?: string | null;
   race: string;
   class: string;
   background: string;
@@ -30,6 +31,7 @@ const transformServerToClient = (serverData: any): Character => {
   return {
     id: serverData._id || serverData.id,
     name: serverData.name,
+    portrait: serverData.portrait ?? null,
     race: serverData.race,
     class: serverData.class,
     level: serverData.level || 1,
@@ -60,6 +62,7 @@ export const characterService = {
     try {
       const serverData: ServerCharacterData = {
         name: characterData.name,
+        portrait: characterData.portrait ?? null,
         race: characterData.race,
         class: characterData.class,
         background: characterData.background,

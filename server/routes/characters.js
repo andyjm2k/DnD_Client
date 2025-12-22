@@ -10,7 +10,7 @@ const prisma = new PrismaClient();
 router.post('/', auth, async (req, res) => {
   try {
     const {
-      name, race, class: characterClass, background, alignment,
+      name, portrait, race, class: characterClass, background, alignment,
       attributes, hitPoints, armorClass, proficiencies,
       equipment, spells, features, backstory
     } = req.body;
@@ -19,6 +19,7 @@ router.post('/', auth, async (req, res) => {
       data: {
         userId: req.user.id,
         name,
+        portrait,
         race,
         class: characterClass,
         background,
@@ -153,7 +154,7 @@ router.patch('/:id', auth, async (req, res) => {
     }
 
     const {
-      name, race, class: characterClass, background, alignment,
+      name, portrait, race, class: characterClass, background, alignment,
       attributes, hitPoints, armorClass, proficiencies,
       equipment, spells, features, backstory
     } = req.body;
@@ -162,6 +163,7 @@ router.patch('/:id', auth, async (req, res) => {
       where: { id: req.params.id },
       data: {
         name,
+        portrait,
         race,
         class: characterClass,
         background,
