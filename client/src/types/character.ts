@@ -37,6 +37,7 @@ export type CharacterClass = typeof CHARACTER_CLASSES[number];
 export interface Character {
   id?: string;
   name: string;
+  portrait?: string | null;
   race: CharacterRace;
   class: CharacterClass;
   level: number;
