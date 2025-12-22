@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   Character, 
@@ -76,6 +76,7 @@ const RACE_ABILITY_BONUSES: Record<CharacterRace, Partial<Record<AbilityKey, num
 
 const initialCharacter: Omit<Character, 'id' | 'abilities'> = {
   name: '',
+  portrait: null,
   race: 'Human',
   class: 'Fighter',
   level: 1,
@@ -99,6 +100,7 @@ const CharacterCreationForm: React.FC = () => {
   const [halfElfBonuses, setHalfElfBonuses] = useState<AbilityKey[]>(['strength', 'dexterity']);
   const [error, setError] = useState<string>('');
   const [loading, setLoading] = useState(false);
+  const portraitInputRef = useRef<HTMLInputElement | null>(null);
 
   const calculateModifier = (score: number): number => {
     return Math.floor((score - 10) / 2);
@@ -179,6 +181,26 @@ const CharacterCreationForm: React.FC = () => {
     setAbilityScores(buildSuggestedScores());
   };
 
+  const handlePortraitClick = () => {
+    portraitInputRef.current?.click();
+  };
+
+  const handlePortraitChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setCharacter(prev => ({
+        ...prev,
+        portrait: typeof reader.result === 'string' ? reader.result : prev.portrait,
+      }));
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -210,6 +232,39 @@ const CharacterCreationForm: React.FC = () => {
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Basic Information */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="md:row-span-2">
+            <label className="block text-sm font-medium text-gray-700">Portrait</label>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={handlePortraitClick}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  handlePortraitClick();
+                }
+              }}
+              className="mt-1 flex w-full items-center justify-center rounded-md border-2 border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500 hover:border-indigo-400 hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              style={{ aspectRatio: '3 / 4' }}
+            >
+              {character.portrait ? (
+                <img
+                  src={character.portrait}
+                  alt="Character portrait preview"
+                  className="h-full w-full rounded-md object-cover"
+                />
+              ) : (
+                <span className="px-4 text-center">Click empty space to upload a portrait (3:4)</span>
+              )}
+            </div>
+            <input
+              ref={portraitInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handlePortraitChange}
+            />
+          </div>
           <div>
             <label className="block text-sm font-medium text-gray-700">Name</label>
             <input
