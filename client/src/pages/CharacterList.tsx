@@ -111,6 +111,20 @@ const CharacterList: React.FC = () => {
             key={character.id}
             className="bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow"
           >
+            {character.portrait ? (
+              <div className="h-48 bg-gray-100">
+                <img
+                  src={character.portrait}
+                  alt={`${character.name} portrait`}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+              </div>
+            ) : (
+              <div className="h-48 bg-gray-100 flex items-center justify-center text-gray-400 text-sm">
+                No portrait available
+              </div>
+            )}
             <div className="p-6">
               <h3 className="text-xl font-bold mb-2">{character.name}</h3>
               <div className="text-gray-600 space-y-1">

@@ -26,12 +26,40 @@ interface ServerCharacterData {
   backstory: string;
 }
 
+const isLikelyBase64 = (value: string) => /^[A-Za-z0-9+/=]+$/.test(value);
+
+const normalizePortrait = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === 'null' || trimmed === 'undefined') {
+    return null;
+  }
+
+  if (
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('blob:') ||
+    /^https?:\/\//.test(trimmed) ||
+    /^\/(?!\/)/.test(trimmed)
+  ) {
+    return trimmed;
+  }
+
+  if (isLikelyBase64(trimmed)) {
+    return `data:image/png;base64,${trimmed}`;
+  }
+
+  return null;
+};
+
 // Transform server data to client Character format
 const transformServerToClient = (serverData: any): Character => {
   return {
     id: serverData._id || serverData.id,
     name: serverData.name,
-    portrait: serverData.portrait ?? null,
+    portrait: normalizePortrait(serverData.portrait),
     race: serverData.race,
     class: serverData.class,
     level: serverData.level || 1,
