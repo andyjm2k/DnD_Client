@@ -66,8 +66,21 @@ const CharacterDetails: React.FC = () => {
 
   return (
     <div className="max-w-4xl mx-auto p-6">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">{character.name}</h1>
+      <div className="flex flex-col gap-4 mb-6 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-4">
+          {character.portrait ? (
+            <img
+              src={character.portrait}
+              alt={`${character.name} portrait`}
+              className="h-20 w-16 rounded-md object-cover shadow"
+            />
+          ) : (
+            <div className="h-20 w-16 rounded-md bg-gray-100 flex items-center justify-center text-xs text-gray-400">
+              No portrait
+            </div>
+          )}
+          <h1 className="text-3xl font-bold">{character.name}</h1>
+        </div>
         <Link
           to="/characters"
           className="text-blue-500 hover:text-blue-600"
