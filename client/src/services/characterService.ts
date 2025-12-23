@@ -26,18 +26,46 @@ interface ServerCharacterData {
   backstory: string;
 }
 
+// Helper function to decode HTML entities in portrait URLs
+const decodeHtmlEntities = (str: string): string => {
+  try {
+    // Create a temporary textarea element to decode HTML entities
+    // This handles entities like &#x2F; (/) and &amp; (&)
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = str;
+    return textarea.value;
+  } catch (error) {
+    // Fallback: manually replace common HTML entities if DOM method fails
+    console.warn('Failed to decode HTML entities using DOM method, using fallback:', error);
+    return str
+      .replace(/&#x2F;/g, '/')
+      .replace(/&#x2f;/g, '/')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+  }
+};
+
+// Check if a string is likely base64 encoded
 const isLikelyBase64 = (value: string) => /^[A-Za-z0-9+/=]+$/.test(value);
 
+// Normalize portrait URL by decoding HTML entities and validating format
 const normalizePortrait = (value: unknown): string | null => {
   if (typeof value !== 'string') {
     return null;
   }
 
-  const trimmed = value.trim();
+  // Decode HTML entities first (e.g., &#x2F; becomes /)
+  const decoded = decodeHtmlEntities(value);
+  const trimmed = decoded.trim();
+  
   if (!trimmed || trimmed === 'null' || trimmed === 'undefined') {
     return null;
   }
 
+  // Check if it's already a valid data URL, blob URL, HTTP URL, or relative path
   if (
     trimmed.startsWith('data:') ||
     trimmed.startsWith('blob:') ||
@@ -47,6 +75,7 @@ const normalizePortrait = (value: unknown): string | null => {
     return trimmed;
   }
 
+  // If it looks like base64, prepend the data URL prefix
   if (isLikelyBase64(trimmed)) {
     return `data:image/png;base64,${trimmed}`;
   }

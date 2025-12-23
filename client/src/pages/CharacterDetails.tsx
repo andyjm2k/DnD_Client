@@ -72,10 +72,10 @@ const CharacterDetails: React.FC = () => {
             <img
               src={character.portrait}
               alt={`${character.name} portrait`}
-              className="h-20 w-16 rounded-md object-cover shadow"
+              className="aspect-[3/4] w-8 rounded-md object-cover shadow"
             />
           ) : (
-            <div className="h-20 w-16 rounded-md bg-gray-100 flex items-center justify-center text-xs text-gray-400">
+            <div className="aspect-[3/4] w-8 rounded-md bg-gray-100 flex items-center justify-center text-xs text-gray-400">
               No portrait
             </div>
           )}
@@ -98,10 +98,12 @@ const CharacterDetails: React.FC = () => {
                 <img
                   src={character.portrait}
                   alt={`${character.name} portrait`}
-                  className="max-h-80 w-auto rounded-lg object-cover"
+                  className="aspect-[3/4] w-1/2 max-w-[14rem] rounded-lg object-cover"
                 />
               ) : (
-                <div className="text-gray-500">No portrait available.</div>
+                <div className="aspect-[3/4] w-1/2 max-w-[14rem] rounded-lg bg-gray-200 flex items-center justify-center text-gray-500">
+                  No portrait available.
+                </div>
               )}
             </div>
           </div>

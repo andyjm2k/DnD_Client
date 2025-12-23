@@ -54,6 +54,9 @@ const CampaignDetails: React.FC = () => {
   const [customDice, setCustomDice] = useState('');
   const [diceReason, setDiceReason] = useState('');
   const [rollingDice, setRollingDice] = useState(false);
+  
+  // Collapse state for sections between Description and Game Actions
+  const [isSectionsCollapsed, setIsSectionsCollapsed] = useState(false);
 
   const loadCampaign = useCallback(async () => {
     if (!id) return;
@@ -310,98 +313,111 @@ const CampaignDetails: React.FC = () => {
         <div className="p-6 space-y-6">
           {/* Description */}
           <div>
-            <h2 className="text-xl font-semibold mb-2">Description</h2>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-xl font-semibold">Description</h2>
+              <button
+                onClick={() => setIsSectionsCollapsed(!isSectionsCollapsed)}
+                className="text-sm text-indigo-600 hover:text-indigo-800 underline"
+              >
+                {isSectionsCollapsed ? 'Expand All' : 'Collapse All'}
+              </button>
+            </div>
             <p className="text-gray-700">{campaign.description}</p>
           </div>
 
-          {/* Current Location */}
-          <div>
-            <h2 className="text-xl font-semibold mb-2">Current Location</h2>
-            <h3 className="text-lg font-medium text-indigo-600">{campaign.currentLocation}</h3>
-            <p className="text-gray-700 mt-1">{campaign.locationDesc}</p>
-          </div>
-
-          {/* Current Quest */}
-          <div>
-            <h2 className="text-xl font-semibold mb-2">Current Quest</h2>
-            <h3 className="text-lg font-medium text-indigo-600">{campaign.currentQuest}</h3>
-            <p className="text-gray-700 mt-1">{campaign.questDesc}</p>
-          </div>
-
-          {/* Objectives */}
-          <div>
-            <h2 className="text-xl font-semibold mb-2">Objectives</h2>
-            {currentObjectives.length > 0 ? (
-              <ul className="list-disc list-inside text-gray-700 space-y-1">
-                {currentObjectives.map((objective, index) => (
-                  <li key={`${objective}-${index}`}>{objective}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-gray-500">No objectives tracked yet.</p>
-            )}
-          </div>
-
-          {/* Quest Log */}
-          <div>
-            <h2 className="text-xl font-semibold mb-2">Quest Log</h2>
-            {questLog.length > 0 ? (
-              <div className="space-y-3">
-                {questLog.map((entry, index) => (
-                  <div key={`${entry.title}-${index}`} className="border rounded-lg p-3">
-                    <h3 className="font-medium text-indigo-600">{entry.title}</h3>
-                    {entry.description && (
-                      <p className="text-gray-700 mt-1">{entry.description}</p>
-                    )}
-                  </div>
-                ))}
+          {/* Collapsible sections between Description and Game Actions */}
+          {!isSectionsCollapsed && (
+            <>
+              {/* Current Location */}
+              <div>
+                <h2 className="text-xl font-semibold mb-2">Current Location</h2>
+                <h3 className="text-lg font-medium text-indigo-600">{campaign.currentLocation}</h3>
+                <p className="text-gray-700 mt-1">{campaign.locationDesc}</p>
               </div>
-            ) : (
-              <p className="text-gray-500">No quests recorded yet.</p>
-            )}
-          </div>
 
-          {/* Objective History */}
-          <div>
-            <h2 className="text-xl font-semibold mb-2">Objective History</h2>
-            {objectiveLog.length > 0 ? (
-              <ul className="list-disc list-inside text-gray-700 space-y-1">
-                {objectiveLog.map((entry, index) => (
-                  <li key={`${entry.text}-${index}`}>{entry.text}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-gray-500">No objective history yet.</p>
-            )}
-          </div>
+              {/* Current Quest */}
+              <div>
+                <h2 className="text-xl font-semibold mb-2">Current Quest</h2>
+                <h3 className="text-lg font-medium text-indigo-600">{campaign.currentQuest}</h3>
+                <p className="text-gray-700 mt-1">{campaign.questDesc}</p>
+              </div>
 
-          {/* Loot Log */}
-          <div>
-            <h2 className="text-xl font-semibold mb-2">Loot Log</h2>
-            {lootLog.length > 0 ? (
-              <ul className="list-disc list-inside text-gray-700 space-y-1">
-                {lootLog.map((entry, index) => (
-                  <li key={`${entry.text}-${index}`}>{entry.text}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-gray-500">No loot tracked yet.</p>
-            )}
-          </div>
+              {/* Objectives */}
+              <div>
+                <h2 className="text-xl font-semibold mb-2">Objectives</h2>
+                {currentObjectives.length > 0 ? (
+                  <ul className="list-disc list-inside text-gray-700 space-y-1">
+                    {currentObjectives.map((objective, index) => (
+                      <li key={`${objective}-${index}`}>{objective}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-gray-500">No objectives tracked yet.</p>
+                )}
+              </div>
 
-          {/* NPCs */}
-          <div>
-            <h2 className="text-xl font-semibold mb-2">NPCs</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {campaign.npcs.map((npc) => (
-                <div key={npc.id} className="border rounded-lg p-4">
-                  <h3 className="font-medium text-indigo-600">{npc.name}</h3>
-                  <p className="text-sm text-gray-500">{npc.role} - {npc.location}</p>
-                  <p className="text-gray-700 mt-1">{npc.description}</p>
+              {/* Quest Log */}
+              <div>
+                <h2 className="text-xl font-semibold mb-2">Quest Log</h2>
+                {questLog.length > 0 ? (
+                  <div className="space-y-3">
+                    {questLog.map((entry, index) => (
+                      <div key={`${entry.title}-${index}`} className="border rounded-lg p-3">
+                        <h3 className="font-medium text-indigo-600">{entry.title}</h3>
+                        {entry.description && (
+                          <p className="text-gray-700 mt-1">{entry.description}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-gray-500">No quests recorded yet.</p>
+                )}
+              </div>
+
+              {/* Objective History */}
+              <div>
+                <h2 className="text-xl font-semibold mb-2">Objective History</h2>
+                {objectiveLog.length > 0 ? (
+                  <ul className="list-disc list-inside text-gray-700 space-y-1">
+                    {objectiveLog.map((entry, index) => (
+                      <li key={`${entry.text}-${index}`}>{entry.text}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-gray-500">No objective history yet.</p>
+                )}
+              </div>
+
+              {/* Loot Log */}
+              <div>
+                <h2 className="text-xl font-semibold mb-2">Loot Log</h2>
+                {lootLog.length > 0 ? (
+                  <ul className="list-disc list-inside text-gray-700 space-y-1">
+                    {lootLog.map((entry, index) => (
+                      <li key={`${entry.text}-${index}`}>{entry.text}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-gray-500">No loot tracked yet.</p>
+                )}
+              </div>
+
+              {/* NPCs */}
+              <div>
+                <h2 className="text-xl font-semibold mb-2">NPCs</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {campaign.npcs.map((npc) => (
+                    <div key={npc.id} className="border rounded-lg p-4">
+                      <h3 className="font-medium text-indigo-600">{npc.name}</h3>
+                      <p className="text-sm text-gray-500">{npc.role} - {npc.location}</p>
+                      <p className="text-gray-700 mt-1">{npc.description}</p>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
+              </div>
+            </>
+          )}
 
           {/* Game Actions */}
           <div>

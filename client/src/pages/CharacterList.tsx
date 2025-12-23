@@ -111,16 +111,18 @@ const CharacterList: React.FC = () => {
             key={character.id}
             className="bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow"
           >
-            <div className="h-48 bg-gray-100 flex items-center justify-center">
-              {character.portrait ? (
-                <img
-                  src={character.portrait}
-                  alt={`${character.name} portrait`}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <span className="text-gray-400 text-sm">No portrait available</span>
-              )}
+            <div className="bg-gray-100 flex items-center justify-center overflow-hidden py-4">
+              <div className="aspect-[3/4] w-1/2 bg-gray-100 flex items-center justify-center overflow-hidden">
+                {character.portrait ? (
+                  <img
+                    src={character.portrait}
+                    alt={`${character.name} portrait`}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <span className="text-gray-400 text-sm">No portrait available</span>
+                )}
+              </div>
             </div>
             <div className="p-6">
               <h3 className="text-xl font-bold mb-2">{character.name}</h3>
