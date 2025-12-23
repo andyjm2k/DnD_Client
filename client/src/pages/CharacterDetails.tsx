@@ -91,6 +91,20 @@ const CharacterDetails: React.FC = () => {
 
       <div className="bg-white rounded-lg shadow-md p-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="md:col-span-2">
+            <h2 className="text-xl font-semibold mb-4">Portrait</h2>
+            <div className="bg-gray-50 rounded-lg p-4 flex justify-center">
+              {character.portrait ? (
+                <img
+                  src={character.portrait}
+                  alt={`${character.name} portrait`}
+                  className="max-h-80 w-auto rounded-lg object-cover"
+                />
+              ) : (
+                <div className="text-gray-500">No portrait available.</div>
+              )}
+            </div>
+          </div>
           {/* Basic Info */}
           <div>
             <h2 className="text-xl font-semibold mb-4">Basic Information</h2>
