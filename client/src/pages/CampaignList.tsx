@@ -25,6 +25,28 @@ const CampaignList: React.FC = () => {
     }
   };
 
+  // Handle campaign deletion with confirmation
+  const handleDeleteCampaign = async (e: React.MouseEvent, campaignId: string, campaignTitle: string) => {
+    // Stop event propagation to prevent navigation when clicking delete button
+    e.stopPropagation();
+    
+    // Confirm deletion with user
+    if (!window.confirm(`Are you sure you want to delete "${campaignTitle}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      // Delete the campaign
+      await campaignService.deleteCampaign(campaignId);
+      
+      // Reload the campaigns list to reflect the deletion
+      await loadCampaigns();
+    } catch (err) {
+      console.error('Error deleting campaign:', err);
+      setError('Failed to delete campaign. Please try again later.');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center items-center min-h-screen">
@@ -80,11 +102,32 @@ const CampaignList: React.FC = () => {
         {campaigns.map((campaign) => (
           <div
             key={campaign.id}
-            className="bg-white rounded-lg shadow-lg overflow-hidden cursor-pointer hover:shadow-xl transition-shadow"
+            className="bg-white rounded-lg shadow-lg overflow-hidden cursor-pointer hover:shadow-xl transition-shadow relative"
             onClick={() => navigate(`/campaigns/${campaign.id}`)}
           >
-            <div className="bg-indigo-600 text-white px-4 py-2">
-              <h2 className="text-xl font-semibold truncate">{campaign.title}</h2>
+            <div className="bg-indigo-600 text-white px-4 py-2 flex justify-between items-center">
+              <h2 className="text-xl font-semibold truncate flex-1">{campaign.title}</h2>
+              <button
+                onClick={(e) => handleDeleteCampaign(e, campaign.id, campaign.title)}
+                className="ml-2 text-white hover:text-red-200 transition-colors p-1 rounded"
+                title="Delete campaign"
+                aria-label={`Delete ${campaign.title}`}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                  />
+                </svg>
+              </button>
             </div>
             <div className="p-4">
               <div className="text-sm text-gray-500 mb-2">

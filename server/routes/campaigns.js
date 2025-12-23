@@ -631,4 +631,33 @@ router.post('/:id/roll', auth, async (req, res) => {
   }
 });
 
+// Delete a campaign
+router.delete('/:id', auth, async (req, res) => {
+  try {
+    // Find the campaign to verify it exists and user owns it
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    // Verify the user owns this campaign
+    if (campaign.playerId !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized to delete this campaign' });
+    }
+
+    // Delete the campaign (cascade deletes will handle related records)
+    await prisma.campaign.delete({
+      where: { id: req.params.id }
+    });
+
+    res.json({ message: 'Campaign deleted successfully' });
+  } catch (error) {
+    console.error('Delete campaign error:', error);
+    res.status(500).json({ error: 'Error deleting campaign' });
+  }
+});
+
 module.exports = router; 

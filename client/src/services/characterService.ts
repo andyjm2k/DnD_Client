@@ -85,6 +85,24 @@ const normalizePortrait = (value: unknown): string | null => {
 
 // Transform server data to client Character format
 const transformServerToClient = (serverData: any): Character => {
+  // Helper function to calculate ability modifier from score
+  const calculateModifier = (score: number): number => {
+    return Math.floor((score - 10) / 2);
+  };
+
+  // Get ability scores from server response (Prisma returns them as top-level fields)
+  // Fallback to attributes object for backward compatibility
+  const strength = serverData.strength ?? serverData.attributes?.strength ?? 10;
+  const dexterity = serverData.dexterity ?? serverData.attributes?.dexterity ?? 10;
+  const constitution = serverData.constitution ?? serverData.attributes?.constitution ?? 10;
+  const intelligence = serverData.intelligence ?? serverData.attributes?.intelligence ?? 10;
+  const wisdom = serverData.wisdom ?? serverData.attributes?.wisdom ?? 10;
+  const charisma = serverData.charisma ?? serverData.attributes?.charisma ?? 10;
+
+  // Get hit points from server response (Prisma uses maxHitPoints and currentHitPoints)
+  const maxHitPoints = serverData.maxHitPoints ?? serverData.hitPoints?.maximum ?? 10;
+  const currentHitPoints = serverData.currentHitPoints ?? serverData.hitPoints?.current ?? 10;
+
   return {
     id: serverData._id || serverData.id,
     name: serverData.name,
@@ -96,18 +114,18 @@ const transformServerToClient = (serverData: any): Character => {
     alignment: serverData.alignment || 'True Neutral',
     experience: serverData.experience || 0,
     abilities: {
-      strength: { score: serverData.attributes?.strength || 10, modifier: Math.floor((serverData.attributes?.strength || 10 - 10) / 2) },
-      dexterity: { score: serverData.attributes?.dexterity || 10, modifier: Math.floor((serverData.attributes?.dexterity || 10 - 10) / 2) },
-      constitution: { score: serverData.attributes?.constitution || 10, modifier: Math.floor((serverData.attributes?.constitution || 10 - 10) / 2) },
-      intelligence: { score: serverData.attributes?.intelligence || 10, modifier: Math.floor((serverData.attributes?.intelligence || 10 - 10) / 2) },
-      wisdom: { score: serverData.attributes?.wisdom || 10, modifier: Math.floor((serverData.attributes?.wisdom || 10 - 10) / 2) },
-      charisma: { score: serverData.attributes?.charisma || 10, modifier: Math.floor((serverData.attributes?.charisma || 10 - 10) / 2) },
+      strength: { score: strength, modifier: calculateModifier(strength) },
+      dexterity: { score: dexterity, modifier: calculateModifier(dexterity) },
+      constitution: { score: constitution, modifier: calculateModifier(constitution) },
+      intelligence: { score: intelligence, modifier: calculateModifier(intelligence) },
+      wisdom: { score: wisdom, modifier: calculateModifier(wisdom) },
+      charisma: { score: charisma, modifier: calculateModifier(charisma) },
     },
     hitPoints: {
-      maximum: serverData.hitPoints || serverData.attributes?.hitPoints || 10,
-      current: serverData.hitPoints || serverData.attributes?.hitPoints || 10,
+      maximum: maxHitPoints,
+      current: currentHitPoints,
     },
-    armorClass: serverData.armorClass || serverData.attributes?.armorClass || 10,
+    armorClass: serverData.armorClass || 10,
     speed: serverData.speed || 30,
     proficiencyBonus: serverData.proficiencyBonus || 2,
     backstory: serverData.backstory || '',
