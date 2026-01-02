@@ -44,16 +44,27 @@ export interface Model {
   owned_by: string;
 }
 
+// Campaign service for managing campaigns and fetching available AI models
 export const campaignService = {
   // Fetch available models from the OpenAI-compatible endpoint
-  async getAvailableModels(): Promise<Model[]> {
+  getAvailableModels: async function(): Promise<Model[]> {
+    // Log that we're attempting to fetch models
+    console.log('=== ATTEMPTING TO FETCH MODELS ===');
+    console.log('Request URL: /api/llm/models');
+    console.log('Axios defaults headers:', axios.defaults.headers.common);
+    
     try {
+      // Log before making the request
+      console.log('Making request to /api/llm/models...');
+      
       const response = await axios.get('/api/llm/models', {
         timeout: 10000 // 10 second timeout for responsiveness
       });
       
       // Log the response for debugging
       console.log('Models API response received:', response.data);
+      console.log('Response status:', response.status);
+      console.log('Response headers:', response.headers);
       
       // Extract models from the response (OpenAI-compatible format)
       // Response format: { data: [{ id: "...", ... }] }
@@ -79,12 +90,14 @@ export const campaignService = {
         console.error('  Status Text:', error.response.statusText);
         console.error('  Response Data:', error.response.data);
         console.error('  Request URL:', error.config?.url);
+        console.error('  Request Headers:', error.config?.headers);
       } else if (error.request) {
         // Request was made but no response received (CORS, network error, etc.)
         console.error('No response received (likely CORS or network issue):');
         console.error('  Error Message:', error.message);
         console.error('  Request URL:', error.config?.url);
         console.error('  Base URL:', error.config?.baseURL);
+        console.error('  Request Headers:', error.config?.headers);
         console.error('  Full Request Object:', error.request);
       } else {
         // Error setting up the request

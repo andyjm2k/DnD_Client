@@ -28,9 +28,12 @@ const CampaignCreation: React.FC = () => {
 
   // Load available models from the OpenAI-compatible endpoint
   const loadAvailableModels = useCallback(async () => {
+    console.log('loadAvailableModels called');
     setModelsLoading(true);
     try {
+      console.log('Calling campaignService.getAvailableModels()...');
       const models = await campaignService.getAvailableModels();
+      console.log('Received models:', models);
       setAvailableModels(models);
       
       // If models were loaded and the current model isn't in the list, set the first available model
@@ -49,12 +52,16 @@ const CampaignCreation: React.FC = () => {
           }
           return prev;
         });
+      } else {
+        console.warn('No models returned from API, using fallback options');
       }
     } catch (err) {
       // Error is already handled in the service, just log for debugging
+      console.error('Error in loadAvailableModels:', err);
       console.warn('Models could not be loaded, using fallback options');
     } finally {
       setModelsLoading(false);
+      console.log('loadAvailableModels completed');
     }
   }, []);
 

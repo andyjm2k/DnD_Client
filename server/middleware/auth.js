@@ -5,9 +5,15 @@ const prisma = new PrismaClient();
 
 const auth = async (req, res, next) => {
   try {
+    // Log authentication attempt for debugging
+    console.log('=== Auth middleware called ===');
+    console.log('Request path:', req.path);
+    console.log('Authorization header:', req.header('Authorization') ? 'Present' : 'Missing');
+    
     const token = req.header('Authorization')?.replace('Bearer ', '');
     
     if (!token) {
+      console.log('No token provided, returning 401');
       throw new Error();
     }
 
@@ -25,6 +31,7 @@ const auth = async (req, res, next) => {
     });
 
     if (!user) {
+      console.log('User not found, returning 401');
       throw new Error();
     }
 
@@ -34,10 +41,12 @@ const auth = async (req, res, next) => {
       data: { lastActive: new Date() }
     });
 
+    console.log('Authentication successful for user:', user.username);
     req.user = user;
     req.token = token;
     next();
   } catch (error) {
+    console.log('Authentication failed:', error.message);
     res.status(401).json({ error: 'Please authenticate.' });
   }
 };
