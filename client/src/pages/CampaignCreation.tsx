@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Character } from '../types/character';
-import { campaignService, CreateCampaignData, AIDMSettings } from '../services/campaignService';
+import { campaignService, CreateCampaignData, AIDMSettings, Model } from '../services/campaignService';
 import { characterService } from '../services/characterService';
 
 const CampaignCreation: React.FC = () => {
@@ -9,6 +9,8 @@ const CampaignCreation: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
   const [characters, setCharacters] = useState<Character[]>([]);
+  const [availableModels, setAvailableModels] = useState<Model[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
   const [formData, setFormData] = useState<CreateCampaignData>({
     title: '',
     setting: '',
@@ -24,9 +26,42 @@ const CampaignCreation: React.FC = () => {
     }
   });
 
+  // Load available models from the OpenAI-compatible endpoint
+  const loadAvailableModels = useCallback(async () => {
+    setModelsLoading(true);
+    try {
+      const models = await campaignService.getAvailableModels();
+      setAvailableModels(models);
+      
+      // If models were loaded and the current model isn't in the list, set the first available model
+      if (models.length > 0) {
+        // Use functional update to access current state and check if model exists
+        setFormData(prev => {
+          const currentModelExists = models.some(m => m.id === prev.aiDmSettings.model);
+          if (!currentModelExists) {
+            return {
+              ...prev,
+              aiDmSettings: {
+                ...prev.aiDmSettings,
+                model: models[0].id
+              }
+            };
+          }
+          return prev;
+        });
+      }
+    } catch (err) {
+      // Error is already handled in the service, just log for debugging
+      console.warn('Models could not be loaded, using fallback options');
+    } finally {
+      setModelsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadCharacters();
-  }, []);
+    loadAvailableModels();
+  }, [loadAvailableModels]);
 
   const loadCharacters = async () => {
     try {
@@ -170,11 +205,30 @@ const CampaignCreation: React.FC = () => {
                 name="aiDmSettings.model"
                 value={formData.aiDmSettings.model}
                 onChange={handleInputChange}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
+                disabled={modelsLoading}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
               >
-                <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                <option value="gpt-4">GPT-4</option>
+                {modelsLoading ? (
+                  <option value="">Loading models...</option>
+                ) : availableModels.length > 0 ? (
+                  availableModels.map(model => (
+                    <option key={model.id} value={model.id}>
+                      {model.id}
+                    </option>
+                  ))
+                ) : (
+                  // Fallback options if models endpoint is unresponsive
+                  <>
+                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                    <option value="gpt-4">GPT-4</option>
+                  </>
+                )}
               </select>
+              {!modelsLoading && availableModels.length === 0 && (
+                <p className="mt-1 text-xs text-gray-500">
+                  Using fallback models. Model endpoint may be unavailable.
+                </p>
+              )}
             </div>
 
             <div>

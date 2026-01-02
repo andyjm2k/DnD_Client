@@ -2,7 +2,11 @@ import axios from 'axios';
 import { Campaign } from '../types/campaign';
 
 const API_URL = '/api/campaigns';
-const AI_API_URL = 'http://localhost:1234/v1';
+// Use environment variable if available, otherwise fall back to default
+// This uses the same base URL configuration as the server-side LLM service
+const AI_API_URL = process.env.REACT_APP_OPENAI_BASE_URL || 'http://localhost:1234/v1';
+// Optional API key for OpenAI-compatible endpoints that require authentication
+const AI_API_KEY = process.env.REACT_APP_OPENAI_API_KEY;
 
 // Create a separate axios instance for AI API calls
 const aiAxios = axios.create({
@@ -10,6 +14,8 @@ const aiAxios = axios.create({
   withCredentials: false, // Disable sending credentials
   headers: {
     'Content-Type': 'application/json',
+    // Add API key header if provided (for OpenAI-compatible APIs that require auth)
+    ...(AI_API_KEY && { 'Authorization': `Bearer ${AI_API_KEY}` })
   }
 });
 
@@ -30,7 +36,76 @@ export interface CreateCampaignData {
   aiDmSettings: AIDMSettings;
 }
 
+// Interface for model data from OpenAI-compatible API
+export interface Model {
+  id: string;
+  object: string;
+  created: number;
+  owned_by: string;
+}
+
 export const campaignService = {
+  // Fetch available models from the OpenAI-compatible endpoint
+  async getAvailableModels(): Promise<Model[]> {
+    // Log the full URL being requested for debugging
+    const fullUrl = `${AI_API_URL}/models`;
+    console.log('Attempting to fetch models from:', fullUrl);
+    
+    try {
+      // Use the same axios instance configured for AI API calls
+      // The base URL already includes /v1, so we just need /models
+      const response = await aiAxios.get('/models', {
+        timeout: 10000 // 10 second timeout for responsiveness
+      });
+      
+      // Log the response for debugging
+      console.log('Models API response received:', response.data);
+      
+      // Extract models from the response (OpenAI-compatible format)
+      // Response format: { data: [{ id: "...", ... }] }
+      if (response.data && response.data.data && Array.isArray(response.data.data)) {
+        console.log(`Successfully loaded ${response.data.data.length} models`);
+        return response.data.data;
+      }
+      // Some APIs return the array directly
+      if (Array.isArray(response.data)) {
+        console.log(`Successfully loaded ${response.data.length} models (direct array format)`);
+        return response.data;
+      }
+      console.warn('Unexpected response format:', response.data);
+      return [];
+    } catch (error: any) {
+      // Log detailed error information for debugging - use console.error to ensure visibility
+      console.error('=== ERROR FETCHING MODELS ===');
+      console.error('Full URL attempted:', fullUrl);
+      console.error('Base URL:', AI_API_URL);
+      
+      if (error.response) {
+        // Server responded with error status
+        console.error('Server responded with error:');
+        console.error('  Status:', error.response.status);
+        console.error('  Status Text:', error.response.statusText);
+        console.error('  Response Data:', error.response.data);
+        console.error('  Request URL:', error.config?.url);
+      } else if (error.request) {
+        // Request was made but no response received (CORS, network error, etc.)
+        console.error('No response received (likely CORS or network issue):');
+        console.error('  Error Message:', error.message);
+        console.error('  Request URL:', error.config?.url);
+        console.error('  Base URL:', error.config?.baseURL);
+        console.error('  Full Request Object:', error.request);
+      } else {
+        // Error setting up the request
+        console.error('Request setup error:');
+        console.error('  Error Message:', error.message);
+        console.error('  Full Error:', error);
+      }
+      console.error('=== END ERROR DETAILS ===');
+      
+      // Return empty array for graceful degradation
+      return [];
+    }
+  },
   async createCampaign(data: CreateCampaignData) {
     try {
       // First, generate campaign details using AI
