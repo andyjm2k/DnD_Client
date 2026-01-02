@@ -65,6 +65,32 @@ class LLMService {
       throw new Error('Failed to generate Dungeon Master response');
     }
   }
+
+  async listModels() {
+    if (this.useMock) {
+      return [];
+    }
+
+    if (!this.client?.models?.list) {
+      console.warn('OpenAI client does not support listing models.');
+      return [];
+    }
+
+    try {
+      const response = await this.client.models.list();
+      if (Array.isArray(response?.data)) {
+        return response.data;
+      }
+      if (Array.isArray(response)) {
+        return response;
+      }
+      console.warn('Unexpected models response format:', response);
+      return [];
+    } catch (error) {
+      console.error('Error fetching models from OpenAI-compatible endpoint:', error);
+      return [];
+    }
+  }
   
   // Add a mock response generator for when API is unavailable
   _generateMockResponse(campaign, playerMessage, context) {
