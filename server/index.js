@@ -12,6 +12,7 @@ const authRoutes = require('./routes/auth');
 const characterRoutes = require('./routes/characters');
 const campaignRoutes = require('./routes/campaigns');
 const rbacRoutes = require('./routes/rbac');
+const llmRoutes = require('./routes/llm');
 
 // Import middleware
 const { sanitizeInput, securityHeaders } = require('./middleware/validation');
@@ -108,6 +109,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/characters', characterRoutes);
 app.use('/api/campaigns', campaignRoutes);
 app.use('/api/rbac', rbacRoutes);
+app.use('/api/llm', llmRoutes);
 
 // Serve static assets in production
 if (process.env.NODE_ENV === 'production') {

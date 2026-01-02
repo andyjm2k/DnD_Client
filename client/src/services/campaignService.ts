@@ -47,14 +47,8 @@ export interface Model {
 export const campaignService = {
   // Fetch available models from the OpenAI-compatible endpoint
   async getAvailableModels(): Promise<Model[]> {
-    // Log the full URL being requested for debugging
-    const fullUrl = `${AI_API_URL}/models`;
-    console.log('Attempting to fetch models from:', fullUrl);
-    
     try {
-      // Use the same axios instance configured for AI API calls
-      // The base URL already includes /v1, so we just need /models
-      const response = await aiAxios.get('/models', {
+      const response = await axios.get('/api/llm/models', {
         timeout: 10000 // 10 second timeout for responsiveness
       });
       
@@ -77,8 +71,6 @@ export const campaignService = {
     } catch (error: any) {
       // Log detailed error information for debugging - use console.error to ensure visibility
       console.error('=== ERROR FETCHING MODELS ===');
-      console.error('Full URL attempted:', fullUrl);
-      console.error('Base URL:', AI_API_URL);
       
       if (error.response) {
         // Server responded with error status
