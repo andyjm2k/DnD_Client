@@ -188,6 +188,7 @@ model GameState {
   lastAction      String?
   combatActive    Boolean   @default(false)
   initiativeOrder String?   // JSON string of initiative order
+  currentTurnIndex Int?     // Index of current turn in initiative order (0-based)
   campaign        Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 }
 

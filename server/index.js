@@ -77,7 +77,8 @@ io.on('connection', (socket) => {
           },
           data: {
             combatActive: action === 'COMBAT_START',
-            initiativeOrder: action === 'COMBAT_START' ? JSON.stringify(payload.order) : null
+            initiativeOrder: action === 'COMBAT_START' ? JSON.stringify(payload.order) : null,
+            currentTurnIndex: action === 'COMBAT_START' ? 0 : null // Initialize to first turn (index 0) when combat starts
           }
         });
       }

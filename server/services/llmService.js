@@ -74,8 +74,11 @@ class LLMService {
 
         const aiResponse = response.choices[0].message.content;
         
+        // Strip thinking tags from thinking models (o1-preview, o3-mini, etc.)
+        const strippedResponse = this._stripThinkingTags(aiResponse);
+        
         // Sanitize the response to remove any player dice roll simulation
-        const sanitizedResponse = this._sanitizeDiceRolls(aiResponse);
+        const sanitizedResponse = this._sanitizeDiceRolls(strippedResponse);
         
         // Execute any DM dice roll requests in the AI response
         const { message: finalMessage, rolls: dmRolls } = await this.executeDMRolls(sanitizedResponse, campaign.id);
@@ -174,7 +177,9 @@ Include:
         max_tokens: 1000
       });
 
-      return response.choices[0].message.content;
+      // Strip thinking tags from thinking models before returning
+      const content = response.choices[0].message.content;
+      return this._stripThinkingTags(content);
     } catch (error) {
       console.error('Error generating campaign setting:', error);
       throw new Error('Failed to generate campaign setting');
@@ -218,8 +223,12 @@ Now provide a brief description and ask the player to roll.`, context);
               max_tokens: 500
             });
 
+            // Strip thinking tags from thinking models
+            const rawContent = response.choices[0].message.content;
+            const strippedContent = this._stripThinkingTags(rawContent);
+            
             // Sanitize the response to prevent dice roll simulation
-            const sanitizedContent = this._sanitizeDiceRolls(response.choices[0].message.content);
+            const sanitizedContent = this._sanitizeDiceRolls(strippedContent);
 
             return {
               message: `${sanitizedContent}\n\nMake an ${action.skill} check (DC ${dc}).`,
@@ -256,10 +265,14 @@ Now provide a brief description and ask the player to roll.`, context);
             messages: messages,
             temperature: campaign.aiDmSettings.temperature,
             max_tokens: 500
-          });
+            });
 
+          // Strip thinking tags from thinking models
+          const rawContent = response.choices[0].message.content;
+          const strippedContent = this._stripThinkingTags(rawContent);
+          
           // Sanitize the response to prevent dice roll simulation
-          const sanitizedContent = this._sanitizeDiceRolls(response.choices[0].message.content);
+          const sanitizedContent = this._sanitizeDiceRolls(strippedContent);
 
           return {
             message: sanitizedContent,
@@ -302,10 +315,14 @@ Now provide a brief description and ask the player to roll.`, context);
           max_tokens: 500
         });
 
+        // Strip thinking tags from thinking models
+        const rawContent = response.choices[0].message.content;
+        const strippedContent = this._stripThinkingTags(rawContent);
+        
         return {
-          message: response.choices[0].message.content,
+          message: strippedContent,
           type: action.type,
-          metadata: this._extractActionMetadata(response.choices[0].message.content, action.type)
+          metadata: this._extractActionMetadata(strippedContent, action.type)
         };
       } catch (apiError) {
         console.error('OpenAI API error in game action:', apiError);
@@ -413,6 +430,19 @@ ITEM AND LOOT MANAGEMENT:
 - Both formats work, but structured format [ITEM:...] is more reliable for automatic detection
 - When players explicitly pick up items (e.g., "I pick up the sword"), the system will detect and add them automatically
 
+ITEM REMOVAL AND USAGE:
+- When players use, drop, give, consume, or remove items, the system automatically removes them from inventory
+- Keywords that trigger item removal: use, remove, drop, give, consume, drink, eat, throw, discard
+- If a player requests to use/remove/drop an item that is NOT in their inventory, you MUST reject the request
+- Rejection examples:
+  * "You don't have a [item name] in your inventory."
+  * "You search through your belongings but can't find a [item name]."
+  * "You don't currently possess a [item name]."
+- Reusable items (weapons, armor, tools): When equipped and used/dropped, they are unequipped but NOT removed from inventory
+- Consumable items (potions, scrolls, food): When used, they are removed from inventory completely
+- If quantity > 1, only one is removed; if quantity = 1, the item is completely removed
+- Always acknowledge when items are successfully used/removed in your narrative
+
 DAMAGE AND COMBAT:
 - When characters take damage in combat, use structured format [DAMAGE:X] for reliable automatic detection
   - Examples: "The orc's blade strikes you for [DAMAGE:5] slashing damage"
@@ -425,6 +455,16 @@ DAMAGE AND COMBAT:
 - If a character succeeds on 3 death saving throws, they stabilize (remain unconscious but no longer dying)
 - A natural 20 on a death saving throw immediately revives the character with 1 HP
 - A natural 1 on a death saving throw counts as 2 failures
+
+COMBAT TURN ORDER:
+- Combat follows initiative order strictly - participants act in the order determined by their initiative rolls
+- The system tracks whose turn it is automatically - you will see "Current Turn" and "Is Player's Turn" in the game state
+- When it is NOT the player's turn, you MUST describe what the NPCs/enemies do in initiative order before asking for player input
+- Process all NPC turns in order until it reaches the player's turn
+- Only ask "What do you do?" or similar when it is actually the player's turn
+- When processing NPC turns, describe their actions naturally (attacks, movement, spells, etc.)
+- Use [DM_ROLL:...] notation for all NPC dice rolls (attack rolls, damage, saving throws, etc.)
+- After the player takes their turn, the system automatically advances to the next participant in initiative order
 
 Your responses should:
 1. Stay in character as the DM
@@ -514,8 +554,63 @@ Your responses should:
     let contextStr = `Current Game State:
 Location: ${campaign.currentLocation} - ${campaign.locationDesc}
 Current Quest: ${campaign.currentQuest}
-Combat Active: ${campaign.gameState.combatActive}
-${campaign.gameState.combatActive ? `Initiative Order: ${campaign.gameState.initiativeOrder}` : ''}`;
+Combat Active: ${campaign.gameState.combatActive}`;
+    
+    // Add combat turn information if combat is active
+    if (campaign.gameState.combatActive && campaign.gameState.initiativeOrder) {
+      try {
+        // Use parseInitiativeOrder helper to handle both array and object formats
+        // Import the helper function logic inline since we can't import from routes
+        const initiativeOrderStr = campaign.gameState.initiativeOrder;
+        let initiativeOrder = [];
+        
+        try {
+          const parsed = JSON.parse(initiativeOrderStr);
+          // Handle different possible formats
+          if (Array.isArray(parsed)) {
+            // Format: [{name: "Hooded Figure 1", initiative: 15}, ...]
+            initiativeOrder = parsed.map(entry => ({
+              name: entry.name || entry.entity || entry.participant || String(entry),
+              initiative: entry.initiative || entry.init || 0
+            }));
+          } else if (typeof parsed === 'object' && parsed !== null) {
+            // Format: {"Hooded Figure 1": 15, ...}
+            initiativeOrder = Object.entries(parsed).map(([name, initiative]) => ({
+              name,
+              initiative: typeof initiative === 'number' ? initiative : 0
+            }));
+          }
+        } catch (parseError) {
+          console.error('Error parsing initiative order in context:', parseError);
+        }
+        
+        const currentTurnIndex = campaign.gameState.currentTurnIndex;
+        
+        if (initiativeOrder.length > 0) {
+          contextStr += `\nInitiative Order: ${initiativeOrderStr}`;
+          
+          if (currentTurnIndex !== null && currentTurnIndex !== undefined) {
+            const currentParticipant = initiativeOrder[currentTurnIndex % initiativeOrder.length];
+            if (currentParticipant) {
+              contextStr += `\nCurrent Turn: ${currentParticipant.name} (Initiative: ${currentParticipant.initiative || 'N/A'})`;
+              
+              // Check if it's the player's turn
+              if (campaign.character) {
+                const isPlayerTurn = currentParticipant.name.toLowerCase().trim() === 
+                                     campaign.character.name.toLowerCase().trim();
+                contextStr += `\nIs Player's Turn: ${isPlayerTurn ? 'Yes' : 'No'}`;
+              }
+            }
+          }
+        } else {
+          // If parsing succeeded but resulted in empty array, still include the raw order
+          contextStr += `\nInitiative Order: ${initiativeOrderStr}`;
+        }
+      } catch (error) {
+        // If parsing fails, just include the raw initiative order
+        contextStr += `\nInitiative Order: ${campaign.gameState.initiativeOrder}`;
+      }
+    }
 
     // Add character stats if available
     if (campaign.character) {
@@ -867,6 +962,55 @@ Conditions: ${context.conditions || 'none'}`;
   }
 
   // Sanitize AI responses to prevent player dice roll simulation while preserving DM roll notation
+  // Strip thinking tags from LLM responses (for thinking models like o1-preview, o3-mini)
+  // Removes <thinking>...</thinking> tags and their content, leaving only the final response
+  _stripThinkingTags(content) {
+    if (!content || typeof content !== 'string') {
+      return content;
+    }
+    
+    // Remove various thinking/reasoning tags (case-insensitive, multiline, non-greedy)
+    // Handles: <thinking>, <think>, <reasoning>, <think>, etc.
+    let cleanedContent = content;
+    
+    // First, remove complete tag pairs (opening and closing tags)
+    // Match common thinking tag patterns with their content
+    const completeTagPatterns = [
+      /<think>[\s\S]*?<\/think>/gi,
+      /<thinking>[\s\S]*?<\/thinking>/gi,
+      /<reasoning>[\s\S]*?<\/reasoning>/gi,
+      /<think>[\s\S]*?<\/redacted_reasoning>/gi,
+      /<redacted>[\s\S]*?<\/redacted>/gi,
+      /<internal>[\s\S]*?<\/internal>/gi,
+      /<thought>[\s\S]*?<\/thought>/gi
+    ];
+    
+    // Apply each pattern to remove complete thinking tag pairs
+    completeTagPatterns.forEach(pattern => {
+      cleanedContent = cleanedContent.replace(pattern, '');
+    });
+    
+    // Also handle any remaining tags with thinking-related names (more flexible pattern)
+    // This catches any variations we might have missed
+    cleanedContent = cleanedContent.replace(/<[^>]*(?:think|reason|redact|internal)[^>]*>[\s\S]*?<\/[^>]*(?:think|reason|redact|internal)[^>]*>/gi, '');
+    
+    // Handle unclosed opening tags at the start of content
+    // Some models output <thinking> without closing tags
+    cleanedContent = cleanedContent.replace(/^[\s\n]*<[^>]*(?:think|reason|redact|internal)[^>]*>[\s\n]*/gi, '');
+    
+    // Handle any remaining closing tags
+    cleanedContent = cleanedContent.replace(/<\/[^>]*(?:think|reason|redact|internal)[^>]*>[\s\n]*/gi, '');
+    
+    // Clean up any extra whitespace that might be left (multiple newlines, etc.)
+    // Replace 3+ consecutive newlines with 2 newlines
+    cleanedContent = cleanedContent.replace(/\n{3,}/g, '\n\n');
+    
+    // Trim leading/trailing whitespace
+    cleanedContent = cleanedContent.trim();
+    
+    return cleanedContent;
+  }
+
   _sanitizeDiceRolls(response) {
     // First, protect DM roll notation from being removed
     const dmRollPlaceholders = [];
@@ -957,7 +1101,9 @@ Include:
         max_tokens: 1000
       });
 
-      return response.choices[0].message.content;
+      // Strip thinking tags from thinking models before returning
+      const content = response.choices[0].message.content;
+      return this._stripThinkingTags(content);
     } catch (error) {
       console.error('Error generating campaign:', error);
       throw new Error('Failed to generate campaign');
@@ -989,7 +1135,9 @@ The backstory should include:
         max_tokens: 500
       });
 
-      return response.choices[0].message.content;
+      // Strip thinking tags from thinking models before returning
+      const content = response.choices[0].message.content;
+      return this._stripThinkingTags(content);
     } catch (error) {
       console.error('Error generating character background:', error);
       throw new Error('Failed to generate character background');
@@ -1022,7 +1170,9 @@ The scene should:
         max_tokens: 500
       });
 
-      return response.choices[0].message.content;
+      // Strip thinking tags from thinking models before returning
+      const content = response.choices[0].message.content;
+      return this._stripThinkingTags(content);
     } catch (error) {
       console.error('Error generating opening scene:', error);
       throw new Error('Failed to generate opening scene');
@@ -1186,12 +1336,98 @@ Respond with ONLY "true" or "false" (no quotes, no explanation, just the word).`
         max_tokens: 10 // Only need true/false
       });
 
-      const result = response.choices[0].message.content.trim().toLowerCase();
+      // Strip thinking tags from thinking models before processing
+      const rawContent = response.choices[0].message.content;
+      const strippedContent = this._stripThinkingTags(rawContent);
+      const result = strippedContent.trim().toLowerCase();
       return result === 'true';
     } catch (error) {
       console.error('Error validating item with LLM:', error);
       // On error, default to false (don't add potentially invalid items)
       return false;
+    }
+  }
+
+  // Determine item category (weapon, armor, tool, consumable, etc.)
+  // Returns category string or null if unable to determine
+  // Reusable items: weapon, armor, tool
+  // Removable items: consumable, treasure, and others
+  async determineItemCategory(itemName) {
+    if (!itemName || typeof itemName !== 'string') {
+      return null;
+    }
+
+    // Simple keyword-based categorization for mock mode
+    if (this.useMock) {
+      const lowerItem = itemName.toLowerCase();
+      
+      // Weapon keywords
+      if (lowerItem.match(/\b(sword|axe|bow|dagger|mace|staff|wand|spear|halberd|flail|whip|rapier|scimitar|club|hammer|weapon)\b/)) {
+        return 'weapon';
+      }
+      
+      // Armor keywords
+      if (lowerItem.match(/\b(armor|armour|plate|mail|leather|chain|shield|helmet|gauntlet|boot)\b/)) {
+        return 'armor';
+      }
+      
+      // Tool keywords
+      if (lowerItem.match(/\b(tool|rope|torch|lantern|backpack|bag|pouch|lockpick|thieves|kit|instrument)\b/)) {
+        return 'tool';
+      }
+      
+      // Consumable keywords
+      if (lowerItem.match(/\b(potion|potion|scroll|food|ration|water|healing|elixir|consumable)\b/)) {
+        return 'consumable';
+      }
+      
+      // Default to consumable for unknown items in mock mode
+      return 'consumable';
+    }
+
+    // Use LLM to determine category
+    try {
+      const prompt = `You are a D&D 5E assistant that categorizes items.
+
+Item name: "${itemName}"
+
+Categorize this item into one of these categories:
+- weapon: Swords, bows, daggers, maces, staffs, wands, etc.
+- armor: Armor, shields, helmets, etc.
+- tool: Tools, rope, torches, backpacks, instruments, etc.
+- consumable: Potions, scrolls, food, rations, etc.
+- treasure: Gold, gems, jewelry, etc.
+- other: Anything that doesn't fit the above categories
+
+Respond with ONLY the category name (lowercase, one word), or "other" if unsure.`;
+
+      const response = await this.client.chat.completions.create({
+        model: process.env.OPENAI_API_MODEL || 'gpt-3.5-turbo',
+        messages: [
+          { role: 'system', content: 'You are a D&D 5E assistant that categorizes items. Respond with only the category name.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.1, // Low temperature for consistent categorization
+        max_tokens: 20 // Only need category name
+      });
+
+      // Strip thinking tags from thinking models before processing
+      const rawContent = response.choices[0].message.content;
+      const strippedContent = this._stripThinkingTags(rawContent);
+      const category = strippedContent.trim().toLowerCase();
+      
+      // Validate category
+      const validCategories = ['weapon', 'armor', 'tool', 'consumable', 'treasure', 'other'];
+      if (validCategories.includes(category)) {
+        return category;
+      }
+      
+      // Default to 'other' if invalid response
+      return 'other';
+    } catch (error) {
+      console.error('Error determining item category:', error);
+      // Default to 'consumable' on error (safer to remove than keep)
+      return 'consumable';
     }
   }
 }

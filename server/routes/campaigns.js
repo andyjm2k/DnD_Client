@@ -389,6 +389,81 @@ const detectPlayerItemAcquisition = (playerMessage) => {
   return items;
 };
 
+// Detect when players want to use, remove, drop, or give items from their messages
+// Returns candidate items that need to be matched to inventory
+const detectPlayerItemRemoval = (playerMessage) => {
+  if (!playerMessage || typeof playerMessage !== 'string') {
+    return [];
+  }
+
+  const items = [];
+  const lowerMessage = playerMessage.toLowerCase();
+
+  // Patterns that indicate item removal/usage
+  // Keywords: use, remove, drop, give, consume, drink, eat, throw, discard
+  const removalPatterns = [
+    // Pattern: "use health potion" or "use the sword"
+    /(?:use|remove|drop|give|consume|drink|eat|throw|discard|cast)\s+(?:the\s+)?([a-z][a-z\s]+?)(?:\s+to\s+|\s+at\s+|\s*[,;&]|\s+and\s+|$)/gi,
+    // Pattern: "use 3 health potions" or "drop 5 gold pieces"
+    /(?:use|remove|drop|give|consume|drink|eat|throw|discard|cast)\s+(\d+)\s+([a-z][a-z\s]+?)(?:\s+to\s+|\s+at\s+|\s*[,;&]|\s+and\s+|$)/gi,
+    // Pattern: "give the sword to NPC" - extract item before "to"
+    /(?:give|hand|pass)\s+(?:the\s+)?([a-z][a-z\s]+?)\s+to\s+/gi
+  ];
+
+  for (const pattern of removalPatterns) {
+    let match;
+    while ((match = pattern.exec(playerMessage)) !== null) {
+      let quantity = 1;
+      let itemName = '';
+
+      if (match[1] && /^\d+$/.test(match[1])) {
+        // Second pattern: verb + number + item
+        quantity = parseInt(match[1], 10);
+        itemName = match[2].trim();
+      } else {
+        // First or third pattern: verb + item
+        itemName = match[1].trim();
+      }
+
+      // Clean up item name (remove trailing words like "to", "at", etc.)
+      itemName = itemName.replace(/\s+(?:to|at|on|in|from|with)\s+.*$/, '').trim();
+      itemName = itemName.replace(/[.,;:!?]+$/, '').trim();
+      
+      // Skip if item name is too short or invalid
+      if (itemName.length < 2 || itemName.length > 100) {
+        continue;
+      }
+
+      // Skip common non-item words
+      const skipWords = ['it', 'them', 'that', 'this', 'one', 'some'];
+      if (skipWords.includes(itemName.toLowerCase())) {
+        continue;
+      }
+
+      items.push({
+        item: itemName,
+        quantity: Math.max(1, quantity)
+      });
+    }
+  }
+
+  // Remove duplicates and merge quantities for same items (case-insensitive)
+  const itemMap = new Map();
+  for (const { item, quantity } of items) {
+    const normalized = item.toLowerCase().trim();
+    if (itemMap.has(normalized)) {
+      itemMap.set(normalized, {
+        item: itemMap.get(normalized).item, // Keep original casing
+        quantity: Math.max(itemMap.get(normalized).quantity, quantity) // Use max quantity if multiple mentions
+      });
+    } else {
+      itemMap.set(normalized, { item, quantity });
+    }
+  }
+
+  return Array.from(itemMap.values());
+};
+
 // Validate items using LLM to ensure they are actual items and not descriptive text
 const validateItems = async (items, playerMessage) => {
   if (!items || items.length === 0) {
@@ -413,6 +488,89 @@ const validateItems = async (items, playerMessage) => {
   }
 
   return validatedItems;
+};
+
+// Match player's item description to actual inventory items using LLM
+// Returns matched equipment entry or null if no match found
+const matchItemFromInventory = async (itemName, characterEquipment, playerMessage) => {
+  if (!itemName || !characterEquipment || characterEquipment.length === 0) {
+    return null;
+  }
+
+  // If using mock LLM, do simple case-insensitive matching
+  if (llmService.useMock) {
+    const normalizedItemName = itemName.toLowerCase().trim();
+    // Try exact match first
+    let match = characterEquipment.find(
+      eq => eq.item.toLowerCase().trim() === normalizedItemName
+    );
+    
+    // If no exact match, try partial match
+    if (!match) {
+      match = characterEquipment.find(
+        eq => eq.item.toLowerCase().includes(normalizedItemName) || 
+              normalizedItemName.includes(eq.item.toLowerCase())
+      );
+    }
+    
+    return match || null;
+  }
+
+  // Use LLM to match item description to inventory
+  try {
+    const inventoryList = characterEquipment.map(eq => `- ${eq.item} (quantity: ${eq.quantity}${eq.equipped ? ', equipped' : ''})`).join('\n');
+    
+    const prompt = `You are a D&D 5E assistant helping to match a player's item description to their actual inventory.
+
+Player's message: "${playerMessage}"
+Item description to match: "${itemName}"
+
+Character's inventory:
+${inventoryList}
+
+Your task: Determine which item from the inventory the player is referring to. Consider:
+- Singular/plural variations (e.g., "potion" matches "health potions")
+- Partial matches (e.g., "sword" matches "longsword")
+- Common synonyms (e.g., "HP potion" matches "health potion")
+- Context from the player's message
+
+Respond with ONLY the exact item name from the inventory list (case-sensitive), or "NONE" if no match is found.
+Do not include any explanation, just the item name or "NONE".`;
+
+    const response = await llmService.client.chat.completions.create({
+      model: process.env.OPENAI_API_MODEL || 'gpt-3.5-turbo',
+      messages: [
+        { role: 'system', content: 'You are a D&D 5E assistant that matches item descriptions to inventory items. Respond with only the item name or "NONE".' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.1, // Low temperature for consistent matching
+      max_tokens: 50 // Only need item name
+    });
+
+    // Strip thinking tags from thinking models before processing
+    const rawContent = response.choices[0].message.content;
+    const strippedContent = llmService._stripThinkingTags(rawContent);
+    const matchedItemName = strippedContent.trim();
+    
+    if (matchedItemName === 'NONE' || matchedItemName === '') {
+      return null;
+    }
+
+    // Find the matched equipment entry
+    const match = characterEquipment.find(
+      eq => eq.item === matchedItemName
+    );
+
+    return match || null;
+  } catch (error) {
+    console.error('Error matching item from inventory:', error);
+    // Fallback to simple matching on error
+    const normalizedItemName = itemName.toLowerCase().trim();
+    const match = characterEquipment.find(
+      eq => eq.item.toLowerCase().trim() === normalizedItemName
+    );
+    return match || null;
+  }
 };
 
 // Parse damage from DM messages - supports both structured format and natural language
@@ -821,6 +979,350 @@ const addItemsToCharacterInventory = async (characterId, items) => {
   }
 };
 
+// Remove items from character inventory when player uses, drops, gives, etc.
+// Returns array of results: { item, success, reason, matchedEquipment }
+const removeItemsFromCharacterInventory = async (characterId, itemsToRemove, playerMessage = '') => {
+  if (!characterId || !itemsToRemove || !Array.isArray(itemsToRemove) || itemsToRemove.length === 0) {
+    return [];
+  }
+
+  try {
+    // Get current character equipment
+    const character = await prisma.character.findUnique({
+      where: { id: characterId },
+      include: { equipment: true }
+    });
+
+    if (!character) {
+      console.error(`Character ${characterId} not found when removing items`);
+      return itemsToRemove.map(item => ({
+        item: item.item,
+        success: false,
+        reason: 'Character not found',
+        matchedEquipment: null
+      }));
+    }
+
+    const results = [];
+
+    // Process each item to remove
+    for (const { item: itemName, quantity: requestedQuantity } of itemsToRemove) {
+      const itemNameTrimmed = itemName.trim();
+      if (!itemNameTrimmed) {
+        continue;
+      }
+
+      // Match item to inventory using LLM
+      const matchedEquipment = await matchItemFromInventory(
+        itemNameTrimmed,
+        character.equipment,
+        playerMessage
+      );
+
+      if (!matchedEquipment) {
+        // Item not found in inventory
+        results.push({
+          item: itemNameTrimmed,
+          success: false,
+          reason: 'Item not found in inventory',
+          matchedEquipment: null
+        });
+        continue;
+      }
+
+      // Check if requested quantity is available
+      const quantityToRemove = Math.min(requestedQuantity || 1, matchedEquipment.quantity);
+      
+      // Determine item category to check if it's reusable
+      const itemCategory = await llmService.determineItemCategory(matchedEquipment.item);
+      const isReusable = ['weapon', 'armor', 'tool'].includes(itemCategory);
+
+      // Handle reusable items: never remove them, only unequip if equipped
+      if (isReusable) {
+        if (matchedEquipment.equipped) {
+          // Reusable items (weapons, armor, tools): unequip but don't remove
+          await prisma.equipment.update({
+            where: { id: matchedEquipment.id },
+            data: {
+              equipped: false
+            }
+          });
+          results.push({
+            item: matchedEquipment.item,
+            success: true,
+            reason: 'Unequipped (reusable item)',
+            matchedEquipment: { ...matchedEquipment, equipped: false }
+          });
+        } else {
+          // Reusable item not equipped: don't remove, just acknowledge
+          results.push({
+            item: matchedEquipment.item,
+            success: true,
+            reason: 'Reusable item not removed (weapon/armor/tool)',
+            matchedEquipment: matchedEquipment
+          });
+        }
+        continue; // Skip removal logic for reusable items
+      }
+
+      // Handle equipped non-reusable items: unequip first, then remove
+      if (matchedEquipment.equipped) {
+        await prisma.equipment.update({
+          where: { id: matchedEquipment.id },
+          data: {
+            equipped: false
+          }
+        });
+      }
+
+      // Remove item or decrement quantity (only for non-reusable items)
+      if (matchedEquipment.quantity > quantityToRemove) {
+        // Decrement quantity
+        await prisma.equipment.update({
+          where: { id: matchedEquipment.id },
+          data: {
+            quantity: matchedEquipment.quantity - quantityToRemove
+          }
+        });
+        results.push({
+          item: matchedEquipment.item,
+          success: true,
+          reason: `Removed ${quantityToRemove} (${matchedEquipment.quantity - quantityToRemove} remaining)`,
+          matchedEquipment: { ...matchedEquipment, quantity: matchedEquipment.quantity - quantityToRemove }
+        });
+      } else {
+        // Delete item entry entirely
+        await prisma.equipment.delete({
+          where: { id: matchedEquipment.id }
+        });
+        results.push({
+          item: matchedEquipment.item,
+          success: true,
+          reason: 'Removed completely',
+          matchedEquipment: null
+        });
+      }
+    }
+
+    return results;
+  } catch (error) {
+    console.error('Error removing items from character inventory:', error);
+    // Return failure results for all items
+    return itemsToRemove.map(item => ({
+      item: item.item,
+      success: false,
+      reason: 'Error processing removal',
+      matchedEquipment: null
+    }));
+  }
+};
+
+// Parse initiative order JSON string into array of participants
+// Returns array of {name: string, initiative: number} or empty array
+const parseInitiativeOrder = (initiativeOrderStr) => {
+  if (!initiativeOrderStr || typeof initiativeOrderStr !== 'string') {
+    return [];
+  }
+  
+  try {
+    const parsed = JSON.parse(initiativeOrderStr);
+    // Handle different possible formats
+    if (Array.isArray(parsed)) {
+      // Format: [{name: "Hooded Figure 1", initiative: 15}, ...]
+      return parsed.map(entry => ({
+        name: entry.name || entry.entity || entry.participant || String(entry),
+        initiative: entry.initiative || entry.init || 0
+      }));
+    } else if (typeof parsed === 'object') {
+      // Format: {"Hooded Figure 1": 15, ...}
+      return Object.entries(parsed).map(([name, initiative]) => ({
+        name,
+        initiative: typeof initiative === 'number' ? initiative : 0
+      }));
+    }
+    return [];
+  } catch (error) {
+    console.error('Error parsing initiative order:', error);
+    return [];
+  }
+};
+
+// Get current turn participant from initiative order
+// Returns {name: string, initiative: number} or null
+const getCurrentTurnParticipant = (initiativeOrder, currentTurnIndex) => {
+  if (!initiativeOrder || initiativeOrder.length === 0) {
+    return null;
+  }
+  
+  if (currentTurnIndex === null || currentTurnIndex === undefined) {
+    return null;
+  }
+  
+  const index = currentTurnIndex % initiativeOrder.length;
+  return initiativeOrder[index] || null;
+};
+
+// Check if it's the player's turn
+// Returns true if the participant name matches the character name
+const isPlayerTurn = (participantName, characterName) => {
+  if (!participantName || !characterName) {
+    return false;
+  }
+  
+  // Case-insensitive comparison
+  return participantName.toLowerCase().trim() === characterName.toLowerCase().trim();
+};
+
+// Advance to next turn in initiative order
+// Wraps around to start of new round when reaching the end
+const advanceTurn = async (campaignId, initiativeOrder) => {
+  if (!initiativeOrder || initiativeOrder.length === 0) {
+    return;
+  }
+  
+  try {
+    const gameState = await prisma.gameState.findUnique({
+      where: { campaignId }
+    });
+    
+    if (!gameState) {
+      return;
+    }
+    
+    const currentIndex = gameState.currentTurnIndex;
+    const nextIndex = currentIndex === null || currentIndex === undefined 
+      ? 0 
+      : (currentIndex + 1) % initiativeOrder.length;
+    
+    await prisma.gameState.update({
+      where: { campaignId },
+      data: {
+        currentTurnIndex: nextIndex
+      }
+    });
+  } catch (error) {
+    console.error('Error advancing turn:', error);
+  }
+};
+
+// Process NPC turn - generate AI DM response for NPC action
+// Returns DM response object
+const processNPCTurn = async (campaign, npcName, initiativeOrder) => {
+  try {
+    // Create a system message indicating it's the NPC's turn
+    const npcActionPrompt = `It is ${npcName}'s turn in combat. Describe what ${npcName} does this turn. Make it appropriate for the combat situation and initiative order.`;
+    
+    // Use the LLM service to generate NPC action
+    const dmResponse = await llmService.generateDungeonMasterResponse(
+      campaign,
+      npcActionPrompt,
+      {
+        isNPCTurn: true,
+        npcName: npcName,
+        initiativeOrder: JSON.stringify(initiativeOrder)
+      }
+    );
+    
+    // Record the NPC action as a system message
+    await prisma.chatMessage.create({
+      data: {
+        campaignId: campaign.id,
+        speaker: 'system',
+        message: `${npcName}'s turn`,
+        type: 'combat',
+        metadataStr: JSON.stringify({ npcName, isNPCTurn: true })
+      }
+    });
+    
+    // Record DM's response describing NPC action
+    const dmMessage = await prisma.chatMessage.create({
+      data: {
+        campaignId: campaign.id,
+        speaker: 'dm',
+        message: dmResponse.message,
+        type: dmResponse.type || 'combat',
+        metadataStr: JSON.stringify(dmResponse.metadata || {})
+      }
+    });
+    
+    // Parse and apply damage from NPC actions
+    if (campaign.characterId) {
+      const damageAmount = parseDamageFromMessage(dmResponse.message);
+      if (damageAmount && damageAmount > 0) {
+        const updatedCharacter = await applyDamageToCharacter(campaign.characterId, damageAmount);
+        if (updatedCharacter && updatedCharacter.status === 'unconscious') {
+          await prisma.chatMessage.create({
+            data: {
+              campaignId: campaign.id,
+              speaker: 'system',
+              message: `${updatedCharacter.name} falls unconscious!`,
+              type: 'system'
+            }
+          });
+        }
+      }
+    }
+    
+    return dmResponse;
+  } catch (error) {
+    console.error(`Error processing NPC turn for ${npcName}:`, error);
+    // Return a default response on error
+    return {
+      message: `${npcName} takes their turn.`,
+      type: 'combat',
+      metadata: {}
+    };
+  }
+};
+
+// Process all NPC turns until it's the player's turn
+// Returns array of DM responses for NPC turns
+const processNPCTurnsUntilPlayer = async (campaign, initiativeOrder, currentTurnIndex, characterName) => {
+  const npcResponses = [];
+  
+  if (!initiativeOrder || initiativeOrder.length === 0) {
+    return npcResponses;
+  }
+  
+  let turnIndex = currentTurnIndex === null || currentTurnIndex === undefined ? 0 : currentTurnIndex;
+  const maxIterations = initiativeOrder.length * 2; // Safety limit to prevent infinite loops
+  let iterations = 0;
+  
+  while (iterations < maxIterations) {
+    const participant = getCurrentTurnParticipant(initiativeOrder, turnIndex);
+    
+    if (!participant) {
+      break;
+    }
+    
+    // Check if it's the player's turn
+    if (isPlayerTurn(participant.name, characterName)) {
+      // Update game state to reflect current turn index (player's turn)
+      await prisma.gameState.update({
+        where: { campaignId: campaign.id },
+        data: { currentTurnIndex: turnIndex }
+      });
+      break;
+    }
+    
+    // Process NPC turn
+    const npcResponse = await processNPCTurn(campaign, participant.name, initiativeOrder);
+    npcResponses.push(npcResponse);
+    
+    // Update game state after each NPC turn to keep it in sync
+    await prisma.gameState.update({
+      where: { campaignId: campaign.id },
+      data: { currentTurnIndex: turnIndex }
+    });
+    
+    // Advance to next turn
+    turnIndex = (turnIndex + 1) % initiativeOrder.length;
+    iterations++;
+  }
+  
+  return npcResponses;
+};
+
 // Create a new campaign
 router.post('/', auth, async (req, res) => {
   try {
@@ -1095,6 +1597,28 @@ router.post('/:id/action', auth, async (req, res) => {
 
     const { action, context } = req.body;
 
+    // Handle combat turn order - process NPC turns before player's turn
+    if (campaign.gameState && campaign.gameState.combatActive && campaign.gameState.initiativeOrder && campaign.character) {
+      const initiativeOrder = parseInitiativeOrder(campaign.gameState.initiativeOrder);
+      const currentTurnIndex = campaign.gameState.currentTurnIndex;
+      
+      if (initiativeOrder.length > 0) {
+        // Process all NPC turns until it's the player's turn
+        await processNPCTurnsUntilPlayer(
+          campaign,
+          initiativeOrder,
+          currentTurnIndex,
+          campaign.character.name
+        );
+        
+        // Reload game state to get updated turn index
+        const updatedGameState = await prisma.gameState.findUnique({
+          where: { campaignId: campaign.id }
+        });
+        campaign.gameState = updatedGameState;
+      }
+    }
+
     // Record player action
     const playerMessage = await prisma.chatMessage.create({
       data: {
@@ -1169,16 +1693,53 @@ router.post('/:id/action', auth, async (req, res) => {
       if (itemsToAdd.length > 0) {
         await addItemsToCharacterInventory(campaign.characterId, itemsToAdd);
       }
+
+      // Detect and remove items when player uses, drops, gives, etc.
+      if (action.description) {
+        const itemsToRemove = detectPlayerItemRemoval(action.description);
+        if (itemsToRemove.length > 0) {
+          const removalResults = await removeItemsFromCharacterInventory(
+            campaign.characterId,
+            itemsToRemove,
+            action.description
+          );
+
+          // Check if any items were not found - if so, have AI DM reject the request
+          const notFoundItems = removalResults.filter(r => !r.success && r.reason === 'Item not found in inventory');
+          if (notFoundItems.length > 0) {
+            // Create a system message indicating items weren't found
+            // The AI DM will handle the rejection in its response based on system prompt
+            const notFoundItemNames = notFoundItems.map(r => r.item).join(', ');
+            await prisma.chatMessage.create({
+              data: {
+                campaignId: campaign.id,
+                speaker: 'system',
+                message: `Item removal requested but not found in inventory: ${notFoundItemNames}`,
+                type: 'system'
+              }
+            });
+          }
+        }
+      }
     }
 
     // Update game state if needed
     if (action.type === 'combat_action' || dmResponse.type === 'combat') {
+      // Check if gameState exists before accessing its properties
+      const initiativeOrderStr = context.initiativeOrder || (campaign.gameState ? campaign.gameState.initiativeOrder : null);
+      const initiativeOrder = parseInitiativeOrder(initiativeOrderStr);
+      
+      // Advance turn after player action
+      if (initiativeOrder.length > 0) {
+        await advanceTurn(campaign.id, initiativeOrder);
+      }
+      
       await prisma.gameState.update({
         where: { campaignId: campaign.id },
         data: {
           combatActive: true,
           lastAction: action.description,
-          initiativeOrder: context.initiativeOrder || campaign.gameState.initiativeOrder
+          initiativeOrder: initiativeOrderStr
         }
       });
     }
@@ -1254,6 +1815,28 @@ router.post('/:id/chat', auth, async (req, res) => {
     }
 
     const { message, type } = req.body;
+
+    // Handle combat turn order - process NPC turns before player's turn
+    if (campaign.gameState && campaign.gameState.combatActive && campaign.gameState.initiativeOrder && campaign.character) {
+      const initiativeOrder = parseInitiativeOrder(campaign.gameState.initiativeOrder);
+      const currentTurnIndex = campaign.gameState.currentTurnIndex;
+      
+      if (initiativeOrder.length > 0) {
+        // Process all NPC turns until it's the player's turn
+        await processNPCTurnsUntilPlayer(
+          campaign,
+          initiativeOrder,
+          currentTurnIndex,
+          campaign.character.name
+        );
+        
+        // Reload game state to get updated turn index
+        const updatedGameState = await prisma.gameState.findUnique({
+          where: { campaignId: campaign.id }
+        });
+        campaign.gameState = updatedGameState;
+      }
+    }
 
     // Process any dice rolls in the player's message first
     const { message: processedMessage, rolls } = llmService._processDiceRolls(message);
@@ -1358,6 +1941,45 @@ router.post('/:id/chat', auth, async (req, res) => {
       // Add all detected items to character inventory
       if (itemsToAdd.length > 0) {
         await addItemsToCharacterInventory(campaign.characterId, itemsToAdd);
+      }
+
+      // Detect and remove items when player uses, drops, gives, etc.
+      if (message) {
+        const itemsToRemove = detectPlayerItemRemoval(message);
+        if (itemsToRemove.length > 0) {
+          const removalResults = await removeItemsFromCharacterInventory(
+            campaign.characterId,
+            itemsToRemove,
+            message
+          );
+
+          // Check if any items were not found - if so, have AI DM reject the request
+          const notFoundItems = removalResults.filter(r => !r.success && r.reason === 'Item not found in inventory');
+          if (notFoundItems.length > 0) {
+            // Create a system message indicating items weren't found
+            // The AI DM will handle the rejection in its response based on system prompt
+            const notFoundItemNames = notFoundItems.map(r => r.item).join(', ');
+            await prisma.chatMessage.create({
+              data: {
+                campaignId: campaign.id,
+                speaker: 'system',
+                message: `Item removal requested but not found in inventory: ${notFoundItemNames}`,
+                type: 'system'
+              }
+            });
+          }
+        }
+      }
+    }
+
+    // Update game state and advance turn if combat is active
+    if (campaign.gameState && campaign.gameState.combatActive && dmResponse.type === 'combat') {
+      const initiativeOrderStr = campaign.gameState.initiativeOrder;
+      const initiativeOrder = parseInitiativeOrder(initiativeOrderStr);
+      
+      // Advance turn after player action in combat
+      if (initiativeOrder.length > 0) {
+        await advanceTurn(campaign.id, initiativeOrder);
       }
     }
 
