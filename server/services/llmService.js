@@ -26,13 +26,34 @@ class LLMService {
 
   async generateDungeonMasterResponse(campaign, playerMessage, context = {}) {
     try {
+      // If this is a dice roll result (has rollContext), skip skill check detection
+      // and treat it as a resolution, not a new request
+      const isDiceRollResult = context.rollContext || (context.diceRolls && context.diceRolls.length > 0);
+      
+      // Only detect skill check requests if this is NOT a dice roll result
+      if (!isDiceRollResult) {
+        const detectedSkill = this._detectSkillCheckRequest(playerMessage);
+        if (detectedSkill) {
+          // Route to structured skill check handling
+          const action = {
+            type: 'skill_check',
+            skill: detectedSkill,
+            description: playerMessage
+          };
+          return await this.handleGameAction(campaign, action, context);
+        }
+      }
+
       // Process any dice rolls in the player's message
       const { message: processedMessage, rolls } = this._processDiceRolls(playerMessage);
       
       // Add roll results to context
+      // If explicit diceRolls are provided in context, use those; otherwise use processed rolls
       const updatedContext = {
         ...context,
-        diceRolls: rolls
+        diceRolls: context.diceRolls && context.diceRolls.length > 0 ? context.diceRolls : rolls,
+        // Mark this as a roll result resolution if we have roll context
+        isRollResult: !!context.rollContext
       };
 
       if (this.useMock) {
@@ -51,10 +72,19 @@ class LLMService {
           frequency_penalty: 0.3
         });
 
+        const aiResponse = response.choices[0].message.content;
+        
+        // Sanitize the response to remove any player dice roll simulation
+        const sanitizedResponse = this._sanitizeDiceRolls(aiResponse);
+        
+        // Execute any DM dice roll requests in the AI response
+        const { message: finalMessage, rolls: dmRolls } = await this.executeDMRolls(sanitizedResponse, campaign.id);
+
         return {
-          message: response.choices[0].message.content,
-          type: this._determineResponseType(response.choices[0].message.content),
-          rolls: rolls
+          message: finalMessage,
+          type: this._determineResponseType(finalMessage),
+          rolls: rolls, // Player rolls
+          dmRolls: dmRolls // DM rolls
         };
       } catch (apiError) {
         console.error('OpenAI API error:', apiError);
@@ -113,7 +143,8 @@ class LLMService {
     return {
       message: response,
       type: 'narrative',
-      rolls: context.diceRolls || []
+      rolls: context.diceRolls || [],
+      dmRolls: []
     };
   }
 
@@ -160,7 +191,24 @@ Include:
         // If no roll in the action yet, this is the initial request - set DC and describe the check
         if (!action.description.includes('[d20]')) {
           const dc = this._determineSkillCheckDC(action, campaign.aiDmSettings.difficulty);
-          const messages = await this._buildConversationHistory(campaign, `Setting DC for ${action.skill} check: ${action.description}`, context);
+          const messages = await this._buildConversationHistory(campaign, `[SKILL CHECK REQUEST PHASE]
+Player Action: ${action.description}
+Skill: ${action.skill}
+
+INSTRUCTIONS FOR THIS PHASE:
+- This is a REQUEST phase, NOT a resolution phase
+- The player has NOT rolled dice yet
+- Your job is to:
+  1. Set an appropriate DC (Difficulty Class) for this check
+  2. Describe what the player is attempting
+  3. Ask the player to roll the dice
+- DO NOT determine success or failure yet
+- DO NOT narrate what they find or what happens
+- DO NOT include "RESULT: SUCCESS" or "RESULT: FAILURE" in your response
+- Wait for the player to provide their roll result before narrating outcomes
+
+The system has determined the DC is: ${dc}
+Now provide a brief description and ask the player to roll.`, context);
           
           try {
             const response = await this.client.chat.completions.create({
@@ -170,8 +218,11 @@ Include:
               max_tokens: 500
             });
 
+            // Sanitize the response to prevent dice roll simulation
+            const sanitizedContent = this._sanitizeDiceRolls(response.choices[0].message.content);
+
             return {
-              message: `${response.choices[0].message.content}\n\nMake an ${action.skill} check (DC ${dc}).`,
+              message: `${sanitizedContent}\n\nMake an ${action.skill} check (DC ${dc}).`,
               type: 'system',
               metadata: { dc }
             };
@@ -195,7 +246,7 @@ Include:
         const success = totalRoll >= dc;
         
         const messages = await this._buildConversationHistory(campaign, 
-          `Resolving ${action.skill} check (DC ${dc}):\nRoll: ${playerRoll}\nModifier: +${skillModifier}\nTotal: ${totalRoll}`,
+          `Resolving ${action.skill} check (DC ${dc}):\nRoll: ${playerRoll}\nModifier: +${skillModifier}\nTotal: ${totalRoll}\n\nRESULT: ${success ? 'SUCCESS' : 'FAILURE'} - The total (${totalRoll}) ${success ? 'meets or exceeds' : 'fails to meet'} the DC of ${dc}.`,
           { ...context, success }
         );
 
@@ -207,8 +258,11 @@ Include:
             max_tokens: 500
           });
 
+          // Sanitize the response to prevent dice roll simulation
+          const sanitizedContent = this._sanitizeDiceRolls(response.choices[0].message.content);
+
           return {
-            message: response.choices[0].message.content,
+            message: sanitizedContent,
             type: 'system',
             metadata: {
               dc,
@@ -284,9 +338,22 @@ Include:
     messages.push(...recentHistory);
 
     // Add current message/action
+    // If this is a dice roll result, add context to make it clear this is a resolution
+    let messageContent = currentMessage;
+    if (context.isRollResult && context.rollContext) {
+      const rc = context.rollContext;
+      messageContent = `[DICE ROLL RESOLUTION - This is the result of a dice roll, NOT a new skill check request]
+Player rolled: ${rc.diceNotation}${rc.rolls && rc.rolls.length > 1 ? ` [${rc.rolls.join(', ')}]` : ''}${rc.modifier ? (rc.modifier > 0 ? ` + ${rc.modifier}` : ` - ${Math.abs(rc.modifier)}`) : ''} = ${rc.total}
+${rc.reason ? `Reason: ${rc.reason}` : ''}
+
+${currentMessage}
+
+IMPORTANT: This is a RESOLUTION of a previous skill check or action. Do NOT ask for another skill check. Instead, narrate the outcome based on this roll result.`;
+    }
+    
     messages.push({
       role: 'user',
-      content: currentMessage
+      content: messageContent
     });
 
     return messages;
@@ -300,13 +367,47 @@ Rules Enforcement: ${aiDmSettings.rulesEnforcement}
 
 ${aiDmSettings.systemPrompt}
 
+CRITICAL: NEVER ROLL DICE FOR PLAYERS
+- Players must roll their own dice for all skill checks, saving throws, and attack rolls
+- NEVER include dice roll results in your responses for player actions (e.g., "You roll a 15", "The dice show 12")
+- NEVER simulate or generate dice roll outcomes for player actions
+- When a player roll is needed, state the DC/target and ask the player to roll
+- Only narrate outcomes after the player provides their actual roll result
+- For NPC/DM rolls, use [DM_ROLL:diceNotation] or [ROLL:diceNotation] notation (e.g., [DM_ROLL:d20+5:Orc attacks])
+- The system will automatically execute DM rolls and replace the notation with actual results
+
+CRITICAL: SKILL CHECK TWO-PHASE PROCESS
+
+Skill checks have TWO distinct phases:
+
+PHASE 1: REQUEST PHASE (Player asks to make a check)
+- Player says: "I want to do an investigation check" or "Can I make a Perception check?"
+- Your response MUST:
+  * Set and state the DC (Difficulty Class)
+  * Briefly describe what they're attempting
+  * Ask them to roll the dice
+  * DO NOT determine success/failure
+  * DO NOT narrate what they find
+  * DO NOT include "RESULT: SUCCESS" or "RESULT: FAILURE"
+- Example: "You carefully examine the area. Make an Investigation check (DC 15)."
+
+PHASE 2: RESOLUTION PHASE (Player provides roll result)
+- Player provides their roll result (e.g., "I rolled an 8")
+- The system calculates: Total Roll vs DC
+- The system provides: "RESULT: SUCCESS" or "RESULT: FAILURE"
+- Your response MUST:
+  * Respect the SUCCESS/FAILURE determination provided
+  * Narrate the outcome based on the result
+  * Describe what they find (on success) or what happens (on failure)
+- Example: If system says "RESULT: FAILURE", narrate that they don't find anything or miss the clue
+
 Your responses should:
 1. Stay in character as the DM
 2. Enforce D&D 5E rules appropriately
 3. Create engaging and immersive narratives
 4. Respond to player actions fairly
 5. Maintain consistent world details
-6. Include relevant dice rolls and mechanics when needed`;
+6. Request player dice rolls rather than rolling for them, and use [DM_ROLL:...] notation for NPC/DM rolls`;
   }
 
   _buildGameStateContext(campaign, context) {
@@ -315,6 +416,11 @@ Location: ${campaign.currentLocation} - ${campaign.locationDesc}
 Current Quest: ${campaign.currentQuest}
 Combat Active: ${campaign.gameState.combatActive}
 ${campaign.gameState.combatActive ? `Initiative Order: ${campaign.gameState.initiativeOrder}` : ''}`;
+
+    // Add skill check result if present
+    if (context.success !== undefined) {
+      contextStr += `\nLast Skill Check Result: ${context.success ? 'SUCCESS' : 'FAILURE'}`;
+    }
 
     const questLog = this._parseJsonLog(campaign.questLog);
     const objectiveLog = this._parseJsonLog(campaign.objectiveLog);
@@ -342,9 +448,22 @@ ${campaign.gameState.combatActive ? `Initiative Order: ${campaign.gameState.init
 
     // Add dice roll results if present
     if (context.diceRolls && context.diceRolls.length > 0) {
-      contextStr += '\nDice Rolls: ' + context.diceRolls.map(roll => 
-        `${roll.dice}=${roll.result}`
-      ).join(', ');
+      contextStr += '\nRecent Dice Rolls: ' + context.diceRolls.map(roll => {
+        const rollInfo = roll.diceNotation 
+          ? `${roll.diceNotation}=${roll.total || roll.result}`
+          : `${roll.dice}=${roll.result}`;
+        const reasonInfo = roll.reason ? ` (${roll.reason})` : '';
+        return rollInfo + reasonInfo;
+      }).join(', ');
+    }
+    
+    // Add explicit roll context if present (from dice roll endpoint)
+    if (context.rollContext) {
+      const rc = context.rollContext;
+      const rollDetails = rc.rolls && rc.rolls.length > 1 ? `[${rc.rolls.join(', ')}]` : '';
+      const modifierText = rc.modifier ? (rc.modifier > 0 ? ` + ${rc.modifier}` : ` - ${Math.abs(rc.modifier)}`) : '';
+      const reasonText = rc.reason ? ` for ${rc.reason}` : '';
+      contextStr += `\nPlayer just rolled: ${rc.diceNotation}${rollDetails}${modifierText} = ${rc.total}${reasonText}`;
     }
 
     if (context.additionalContext) {
@@ -415,6 +534,32 @@ Conditions: ${context.conditions || 'none'}`;
     return Math.floor(Math.random() * sides) + 1;
   }
 
+  // Detect skill check requests in chat messages
+  _detectSkillCheckRequest(message) {
+    const skillCheckPatterns = [
+      /(?:want|would like|attempt|try|make|do|perform).*?(?:investigation|perception|insight|athletics|acrobatics|stealth|arcana|history|religion|nature|medicine|survival|animal handling|sleight of hand|deception|intimidation|performance|persuasion).*?(?:check|roll|test)/i,
+      /(?:investigation|perception|insight|athletics|acrobatics|stealth|arcana|history|religion|nature|medicine|survival|animal handling|sleight of hand|deception|intimidation|performance|persuasion).*?(?:check|roll|test)/i
+    ];
+    
+    for (const pattern of skillCheckPatterns) {
+      if (pattern.test(message)) {
+        // Extract skill name
+        const skillMatch = message.match(/(investigation|perception|insight|athletics|acrobatics|stealth|arcana|history|religion|nature|medicine|survival|animal handling|sleight of hand|deception|intimidation|performance|persuasion)/i);
+        if (skillMatch) {
+          // Normalize skill name (handle "animal handling" as two words)
+          let skillName = skillMatch[1].toLowerCase();
+          if (skillName === 'animal handling') {
+            skillName = 'animal_handling';
+          } else if (skillName === 'sleight of hand') {
+            skillName = 'sleight_of_hand';
+          }
+          return skillName;
+        }
+      }
+    }
+    return null;
+  }
+
   _processDiceRolls(message) {
     const diceRegex = /\[d(\d+)\]/g;
     const rolls = [];
@@ -432,6 +577,198 @@ Conditions: ${context.conditions || 'none'}`;
       message: processedMessage,
       rolls: rolls
     };
+  }
+
+  // Roll dice for DM/NPC actions using the same random number generator
+  async rollDiceForDM(campaignId, diceNotation, reason = '') {
+    // Validate dice notation (format: d20, 2d6, d8+3)
+    const diceRegex = /^(\d+)?d(\d+)([+-]\d+)?$/;
+    if (!diceRegex.test(diceNotation)) {
+      throw new Error(`Invalid dice notation: ${diceNotation}`);
+    }
+    
+    // Parse dice notation
+    const matches = diceNotation.match(diceRegex);
+    const count = matches[1] ? parseInt(matches[1]) : 1;
+    const sides = parseInt(matches[2]);
+    const modifier = matches[3] ? parseInt(matches[3]) : 0;
+    
+    // Roll the dice using the same random number generator as player rolls
+    const rolls = [];
+    let total = 0;
+    
+    for (let i = 0; i < count; i++) {
+      const roll = this._rollDice(sides);
+      rolls.push(roll);
+      total += roll;
+    }
+    
+    // Add modifier
+    const finalTotal = total + modifier;
+    
+    return {
+      diceNotation,
+      rolls,
+      modifier,
+      total: finalTotal,
+      reason
+    };
+  }
+
+  // Parse AI response for DM roll requests
+  _processDMRollRequests(message) {
+    // Pattern to match DM roll requests: [DM_ROLL:diceNotation] or [ROLL:diceNotation] or [DM_ROLL:diceNotation:reason]
+    const dmRollPattern = /\[DM_ROLL:([^\]]+)\]/g;
+    const rollPattern = /\[ROLL:([^\]]+)\]/g;
+    
+    const rollRequests = [];
+    
+    // Find all DM roll requests
+    let match;
+    // Reset regex lastIndex
+    dmRollPattern.lastIndex = 0;
+    rollPattern.lastIndex = 0;
+    
+    while ((match = dmRollPattern.exec(message)) !== null) {
+      const fullMatch = match[0];
+      const notation = match[1];
+      
+      // Parse notation (format: "d20+5" or "2d6+3:Attack roll")
+      const parts = notation.split(':');
+      const diceNotation = parts[0].trim();
+      const reason = parts[1] ? parts[1].trim() : '';
+      
+      rollRequests.push({
+        fullMatch,
+        diceNotation,
+        reason
+      });
+    }
+    
+    // Also check for [ROLL:...] pattern
+    while ((match = rollPattern.exec(message)) !== null) {
+      const fullMatch = match[0];
+      const notation = match[1];
+      
+      // Parse notation (format: "d20+5" or "2d6+3:Attack roll")
+      const parts = notation.split(':');
+      const diceNotation = parts[0].trim();
+      const reason = parts[1] ? parts[1].trim() : '';
+      
+      rollRequests.push({
+        fullMatch,
+        diceNotation,
+        reason
+      });
+    }
+    
+    return rollRequests;
+  }
+
+  // Execute all DM roll requests and replace notation with actual results
+  async executeDMRolls(message, campaignId) {
+    const rollRequests = this._processDMRollRequests(message);
+    
+    if (rollRequests.length === 0) {
+      return {
+        message,
+        rolls: []
+      };
+    }
+    
+    let processedMessage = message;
+    const executedRolls = [];
+    
+    for (const request of rollRequests) {
+      try {
+        const rollResult = await this.rollDiceForDM(campaignId, request.diceNotation, request.reason);
+        
+        // Format the roll result for display
+        const rollDetails = rollResult.rolls.length > 1 ? `[${rollResult.rolls.join(', ')}]` : '';
+        const modifierText = rollResult.modifier ? 
+          (rollResult.modifier > 0 ? ` + ${rollResult.modifier}` : ` - ${Math.abs(rollResult.modifier)}`) : '';
+        const reasonText = request.reason ? `${request.reason}: ` : '';
+        
+        const rollDisplay = `${reasonText}Rolled ${rollResult.diceNotation} ${rollDetails}${modifierText} = ${rollResult.total}`;
+        
+        // Replace the notation with the actual roll result
+        processedMessage = processedMessage.replace(request.fullMatch, rollDisplay);
+        
+        executedRolls.push({
+          ...rollResult,
+          reason: request.reason
+        });
+      } catch (error) {
+        console.error(`Error executing DM roll ${request.diceNotation}:`, error);
+        // Replace with error message
+        processedMessage = processedMessage.replace(
+          request.fullMatch, 
+          `[Error rolling ${request.diceNotation}]`
+        );
+      }
+    }
+    
+    return {
+      message: processedMessage,
+      rolls: executedRolls
+    };
+  }
+
+  // Sanitize AI responses to prevent player dice roll simulation while preserving DM roll notation
+  _sanitizeDiceRolls(response) {
+    // First, protect DM roll notation from being removed
+    const dmRollPlaceholders = [];
+    let protectedResponse = response;
+    const dmRollPattern = /\[DM_ROLL:[^\]]+\]/g;
+    const rollPattern = /\[ROLL:[^\]]+\]/g;
+    
+    let match;
+    let placeholderIndex = 0;
+    
+    // Protect [DM_ROLL:...] patterns
+    while ((match = dmRollPattern.exec(response)) !== null) {
+      const placeholder = `__DM_ROLL_PLACEHOLDER_${placeholderIndex}__`;
+      dmRollPlaceholders.push({ placeholder, original: match[0] });
+      protectedResponse = protectedResponse.replace(match[0], placeholder);
+      placeholderIndex++;
+    }
+    
+    // Protect [ROLL:...] patterns
+    rollPattern.lastIndex = 0;
+    while ((match = rollPattern.exec(response)) !== null) {
+      const placeholder = `__DM_ROLL_PLACEHOLDER_${placeholderIndex}__`;
+      dmRollPlaceholders.push({ placeholder, original: match[0] });
+      protectedResponse = protectedResponse.replace(match[0], placeholder);
+      placeholderIndex++;
+    }
+    
+    // Now sanitize player dice roll mentions
+    const diceRollPatterns = [
+      // Patterns like "You roll a 15", "You rolled 12" (but not "The orc rolls")
+      /\b(?:you|the player|your character)\s+(?:roll|rolled|rolls)\s+(?:a\s+)?(\d+)\b/gi,
+      // Patterns like "The dice come up 18" (but not in context of DM rolls)
+      /\b(?:the\s+)?dice\s+(?:come\s+up|show|result|land|read)\s+(\d+)\b/gi,
+      // Patterns like "Rolling... you get a 16"
+      /\brolling[^\d]*(\d+)\b/gi,
+    ];
+    
+    let sanitized = protectedResponse;
+    diceRollPatterns.forEach(pattern => {
+      sanitized = sanitized.replace(pattern, (match, roll) => {
+        // Only replace if it's clearly about player rolls
+        if (match.toLowerCase().includes('you ') || match.toLowerCase().includes('your ')) {
+          return `[Please roll the dice yourself and provide the result]`;
+        }
+        return match; // Keep NPC/environmental roll mentions
+      });
+    });
+    
+    // Restore DM roll placeholders
+    dmRollPlaceholders.forEach(({ placeholder, original }) => {
+      sanitized = sanitized.replace(placeholder, original);
+    });
+    
+    return sanitized;
   }
 
   _parseJsonLog(value) {

@@ -232,11 +232,21 @@ const CampaignDetails: React.FC = () => {
       const result = await campaignService.rollDice(id, notation, diceReason);
       
       // Add the roll result to the game log
-      setGameLog(prevLog => [...prevLog, result.chatMessage]);
+      const newMessages: ChatMessage[] = [result.chatMessage];
+      
+      // If DM response is available, add it to the game log as well
+      if (result.dmResponse) {
+        newMessages.push(result.dmResponse);
+      }
+      
+      setGameLog(prevLog => [...prevLog, ...newMessages]);
       
       // Clear the custom input and reason after rolling
       setCustomDice('');
       setDiceReason('');
+      
+      // Reload campaign details to reflect any updates from DM response
+      loadCampaign();
       
     } catch (err) {
       console.error('Error rolling dice:', err);

@@ -100,10 +100,28 @@ const extractCampaignMentions = (message) => {
 };
 
 const applyCampaignUpdates = async (campaign, updates) => {
+  // Refetch campaign to get latest state and prevent race conditions
+  // This ensures we read the most current questLog, objectiveLog, and lootLog
+  // before applying updates, preventing concurrent update loss
+  const currentCampaign = await prisma.campaign.findUnique({
+    where: { id: campaign.id },
+    select: {
+      questLog: true,
+      objectiveLog: true,
+      lootLog: true
+    }
+  });
+
+  if (!currentCampaign) {
+    console.error(`Campaign ${campaign.id} not found when applying updates`);
+    return;
+  }
+
   const now = new Date().toISOString();
-  const questLog = parseJsonLog(campaign.questLog);
-  const objectiveLog = parseJsonLog(campaign.objectiveLog);
-  const lootLog = parseJsonLog(campaign.lootLog);
+  // Use the freshly fetched campaign data instead of stale campaign object
+  const questLog = parseJsonLog(currentCampaign.questLog);
+  const objectiveLog = parseJsonLog(currentCampaign.objectiveLog);
+  const lootLog = parseJsonLog(currentCampaign.lootLog);
   const data = {};
 
   let hasUpdates = false;
@@ -517,9 +535,36 @@ router.post('/:id/chat', auth, async (req, res) => {
         speaker: 'dm',
         message: dmResponse.message,
         type: dmResponse.type,
-        metadataStr: JSON.stringify({ rolls: dmResponse.rolls })
+        metadataStr: JSON.stringify({ rolls: dmResponse.rolls, dmRolls: dmResponse.dmRolls })
       }
     });
+
+    // If there were DM rolls, create system messages for each roll for transparency
+    if (dmResponse.dmRolls && dmResponse.dmRolls.length > 0) {
+      for (const dmRoll of dmResponse.dmRolls) {
+        const rollDetails = dmRoll.rolls.length > 1 ? `[${dmRoll.rolls.join(', ')}]` : '';
+        const modifierText = dmRoll.modifier ? 
+          (dmRoll.modifier > 0 ? ` + ${dmRoll.modifier}` : ` - ${Math.abs(dmRoll.modifier)}`) : '';
+        const reasonText = dmRoll.reason ? `${dmRoll.reason}: ` : '';
+        
+        await prisma.chatMessage.create({
+          data: {
+            campaignId: campaign.id,
+            speaker: 'system',
+            message: `${reasonText}DM rolled ${dmRoll.diceNotation} ${rollDetails}${modifierText} = ${dmRoll.total}`,
+            type: 'dice_roll',
+            metadataStr: JSON.stringify({
+              diceNotation: dmRoll.diceNotation,
+              rolls: dmRoll.rolls,
+              modifier: dmRoll.modifier,
+              total: dmRoll.total,
+              reason: dmRoll.reason,
+              rolledBy: 'dm'
+            })
+          }
+        });
+      }
+    }
 
     const chatUpdates = extractCampaignMentions(dmResponse.message);
     await applyCampaignUpdates(campaign, chatUpdates);
@@ -532,7 +577,7 @@ router.post('/:id/chat', auth, async (req, res) => {
       },
       {
         ...dmMessage,
-        metadata: { rolls: dmResponse.rolls }
+        metadata: { rolls: dmResponse.rolls, dmRolls: dmResponse.dmRolls }
       }
     ];
 
@@ -546,10 +591,19 @@ router.post('/:id/chat', auth, async (req, res) => {
 // Roll dice during gameplay
 router.post('/:id/roll', auth, async (req, res) => {
   try {
+    // Load full campaign context including settings and history for LLM response
     const campaign = await prisma.campaign.findUnique({
       where: { id: req.params.id },
       include: {
-        character: true
+        character: true,
+        aiDmSettings: true,
+        gameState: true,
+        chatHistory: {
+          orderBy: {
+            timestamp: 'desc'
+          },
+          take: 5
+        }
       }
     });
 
@@ -612,8 +666,94 @@ router.post('/:id/roll', auth, async (req, res) => {
       }
     });
     
-    // Return the roll results
-    res.json({
+    // Prepare roll data for LLM context
+    const rollData = {
+      dice: `d${sides}`,
+      result: finalTotal,
+      diceNotation,
+      rolls,
+      modifier,
+      total: finalTotal,
+      reason
+    };
+    
+    // Build player message for LLM that includes roll context
+    // Format clearly indicates this is a roll RESULT, not a new request
+    const playerRollMessage = reason 
+      ? `[DICE ROLL RESULT] I rolled ${diceNotation} for ${reason} and got ${finalTotal}.`
+      : `[DICE ROLL RESULT] I rolled ${diceNotation} and got ${finalTotal}.`;
+    
+    // Generate DM response with roll context
+    let dmResponse = null;
+    let dmMessage = null;
+    
+    try {
+      // Call LLM with roll context
+      dmResponse = await llmService.generateDungeonMasterResponse(
+        campaign, 
+        playerRollMessage,
+        { 
+          diceRolls: [rollData],
+          rollContext: {
+            diceNotation,
+            rolls,
+            modifier,
+            total: finalTotal,
+            reason
+          }
+        }
+      );
+      
+      // Record DM's response
+      dmMessage = await prisma.chatMessage.create({
+        data: {
+          campaignId: campaign.id,
+          speaker: 'dm',
+          message: dmResponse.message,
+          type: dmResponse.type,
+          metadataStr: JSON.stringify({ rolls: dmResponse.rolls, dmRolls: dmResponse.dmRolls })
+        }
+      });
+      
+      // If there were DM rolls, create system messages for each roll for transparency
+      if (dmResponse.dmRolls && dmResponse.dmRolls.length > 0) {
+        for (const dmRoll of dmResponse.dmRolls) {
+          const dmRollDetails = dmRoll.rolls.length > 1 ? `[${dmRoll.rolls.join(', ')}]` : '';
+          const dmModifierText = dmRoll.modifier ? 
+            (dmRoll.modifier > 0 ? ` + ${dmRoll.modifier}` : ` - ${Math.abs(dmRoll.modifier)}`) : '';
+          const dmReasonText = dmRoll.reason ? `${dmRoll.reason}: ` : '';
+          
+          await prisma.chatMessage.create({
+            data: {
+              campaignId: campaign.id,
+              speaker: 'system',
+              message: `${dmReasonText}DM rolled ${dmRoll.diceNotation} ${dmRollDetails}${dmModifierText} = ${dmRoll.total}`,
+              type: 'dice_roll',
+              metadataStr: JSON.stringify({
+                diceNotation: dmRoll.diceNotation,
+                rolls: dmRoll.rolls,
+                modifier: dmRoll.modifier,
+                total: dmRoll.total,
+                reason: dmRoll.reason,
+                rolledBy: 'dm'
+              })
+            }
+          });
+        }
+      }
+      
+      // Apply any campaign updates from DM response
+      const rollUpdates = extractCampaignMentions(dmResponse.message);
+      await applyCampaignUpdates(campaign, rollUpdates);
+      
+    } catch (llmError) {
+      // Log error but don't fail the request - still return the roll result
+      console.error('Error generating DM response for dice roll:', llmError);
+      // Continue without DM response - graceful degradation
+    }
+    
+    // Return the roll results and DM response (if available)
+    const response = {
       success: true,
       roll: {
         diceNotation,
@@ -623,7 +763,17 @@ router.post('/:id/roll', auth, async (req, res) => {
         message
       },
       chatMessage
-    });
+    };
+    
+    // Add DM response if available
+    if (dmMessage) {
+      response.dmResponse = {
+        ...dmMessage,
+        metadata: { rolls: dmResponse?.rolls, dmRolls: dmResponse?.dmRolls }
+      };
+    }
+    
+    res.json(response);
     
   } catch (error) {
     console.error('Dice roll error:', error);
