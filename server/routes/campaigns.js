@@ -203,6 +203,624 @@ const applyCampaignUpdates = async (campaign, updates) => {
   });
 };
 
+// Parse items from natural language text, extracting item names and quantities
+// Handles patterns like "5 gold pieces", "3 health potions", "a sword", "the magic ring"
+const parseItemsFromText = (text) => {
+  if (!text || typeof text !== 'string') {
+    return [];
+  }
+
+  const items = [];
+  const trimmed = text.trim();
+  
+  if (!trimmed) {
+    return items;
+  }
+
+  // Split by common delimiters (commas, "and", "&", newlines, semicolons)
+  // This handles lists like "sword, shield, and potion" or "sword and shield"
+  const itemPatterns = [
+    // Pattern: "5 gold pieces" or "3 health potions" (number + item)
+    /(\d+)\s+([a-z][a-z\s]+?)(?=\s*[,;&]|\s+and\s+|$)/gi,
+    // Pattern: "a sword" or "the magic ring" (article + item)
+    /\b(?:a|an|the)\s+([a-z][a-z\s]+?)(?=\s*[,;&]|\s+and\s+|$)/gi,
+    // Pattern: standalone items (no quantity or article)
+    /\b([A-Z][a-z]+(?:\s+[a-z]+)*)(?=\s*[,;&]|\s+and\s+|$)/g
+  ];
+
+  // Try to match structured patterns first
+  for (const pattern of itemPatterns) {
+    let match;
+    while ((match = pattern.exec(trimmed)) !== null) {
+      let quantity = 1;
+      let itemName = '';
+
+      if (match[1] && /^\d+$/.test(match[1])) {
+        // First pattern: number + item
+        quantity = parseInt(match[1], 10);
+        itemName = match[2].trim();
+      } else if (match[1]) {
+        // Second or third pattern: article/item name
+        itemName = match[1].trim();
+      }
+
+      // Clean up item name (remove trailing punctuation, normalize whitespace)
+      itemName = itemName.replace(/[.,;:!?]+$/, '').trim();
+      
+      // Skip if item name is too short or looks invalid
+      if (itemName.length < 2 || itemName.length > 100) {
+        continue;
+      }
+
+      // Skip common non-item words
+      const skipWords = ['you', 'find', 'discover', 'receive', 'get', 'obtain', 'pick', 'take', 'grab'];
+      if (skipWords.some(word => itemName.toLowerCase().startsWith(word))) {
+        continue;
+      }
+
+      items.push({
+        item: itemName,
+        quantity: Math.max(1, quantity) // Ensure quantity is at least 1
+      });
+    }
+  }
+
+  // If no structured patterns matched, try splitting by delimiters
+  if (items.length === 0) {
+    const parts = trimmed.split(/[,;&]|\s+and\s+/i).map(p => p.trim()).filter(Boolean);
+    for (const part of parts) {
+      // Try to extract quantity and item name
+      const quantityMatch = part.match(/^(\d+)\s+(.+)$/);
+      if (quantityMatch) {
+        items.push({
+          item: quantityMatch[2].trim(),
+          quantity: parseInt(quantityMatch[1], 10)
+        });
+      } else {
+        // No quantity, assume 1
+        const cleaned = part.replace(/^(?:a|an|the)\s+/i, '').trim();
+        if (cleaned.length >= 2 && cleaned.length <= 100) {
+          items.push({
+            item: cleaned,
+            quantity: 1
+          });
+        }
+      }
+    }
+  }
+
+  // Remove duplicates and merge quantities for same items (case-insensitive)
+  const itemMap = new Map();
+  for (const { item, quantity } of items) {
+    const normalized = item.toLowerCase().trim();
+    if (itemMap.has(normalized)) {
+      itemMap.set(normalized, {
+        item: itemMap.get(normalized).item, // Keep original casing
+        quantity: itemMap.get(normalized).quantity + quantity
+      });
+    } else {
+      itemMap.set(normalized, { item, quantity });
+    }
+  }
+
+  return Array.from(itemMap.values());
+};
+
+// Parse structured items from text using [ITEM:...] or [LOOT:...] format
+const parseStructuredItems = (text) => {
+  if (!text || typeof text !== 'string') {
+    return [];
+  }
+
+  const items = [];
+  // Match [ITEM:item name] or [LOOT:item name] patterns
+  // Also handle quantities: [ITEM:5 gold pieces] or [LOOT:3 health potions]
+  const structuredPattern = /\[(?:ITEM|LOOT):([^\]]+)\]/gi;
+  
+  let match;
+  while ((match = structuredPattern.exec(text)) !== null) {
+    const content = match[1].trim();
+    
+    // Try to parse quantity from content
+    const quantityMatch = content.match(/^(\d+)\s+(.+)$/);
+    if (quantityMatch) {
+      items.push({
+        item: quantityMatch[2].trim(),
+        quantity: parseInt(quantityMatch[1], 10)
+      });
+    } else {
+      // No quantity specified, assume 1
+      items.push({
+        item: content,
+        quantity: 1
+      });
+    }
+  }
+
+  return items;
+};
+
+// Detect when players explicitly pick up or take items from their messages
+// Returns candidate items that still need validation
+const detectPlayerItemAcquisition = (playerMessage) => {
+  if (!playerMessage || typeof playerMessage !== 'string') {
+    return [];
+  }
+
+  const items = [];
+  const lowerMessage = playerMessage.toLowerCase();
+
+  // Patterns that indicate item acquisition
+  const acquisitionPatterns = [
+    /(?:pick\s+up|take|grab|collect|acquire|obtain|get|receive|loot|steal)\s+(?:the\s+)?([a-z][a-z\s]+?)(?=\s*[,;&]|\s+and\s+|$)/gi,
+    /(?:pick\s+up|take|grab|collect|acquire|obtain|get|receive|loot|steal)\s+(\d+)\s+([a-z][a-z\s]+?)(?=\s*[,;&]|\s+and\s+|$)/gi
+  ];
+
+  for (const pattern of acquisitionPatterns) {
+    let match;
+    while ((match = pattern.exec(playerMessage)) !== null) {
+      let quantity = 1;
+      let itemName = '';
+
+      if (match[1] && /^\d+$/.test(match[1])) {
+        // Second pattern: verb + number + item
+        quantity = parseInt(match[1], 10);
+        itemName = match[2].trim();
+      } else {
+        // First pattern: verb + item
+        itemName = match[1].trim();
+      }
+
+      // Clean up item name
+      itemName = itemName.replace(/[.,;:!?]+$/, '').trim();
+      
+      // Skip if item name is too short or invalid
+      if (itemName.length < 2 || itemName.length > 100) {
+        continue;
+      }
+
+      items.push({
+        item: itemName,
+        quantity: Math.max(1, quantity)
+      });
+    }
+  }
+
+  return items;
+};
+
+// Validate items using LLM to ensure they are actual items and not descriptive text
+const validateItems = async (items, playerMessage) => {
+  if (!items || items.length === 0) {
+    return [];
+  }
+
+  const validatedItems = [];
+  
+  // Validate each item candidate using LLM
+  for (const item of items) {
+    try {
+      const isValid = await llmService.validateItem(item.item, playerMessage || '');
+      if (isValid) {
+        validatedItems.push(item);
+      } else {
+        console.log(`Item validation failed for: "${item.item}" (from message: "${playerMessage}")`);
+      }
+    } catch (error) {
+      console.error(`Error validating item "${item.item}":`, error);
+      // On error, skip the item (don't add potentially invalid items)
+    }
+  }
+
+  return validatedItems;
+};
+
+// Parse damage from DM messages - supports both structured format and natural language
+// Returns damage amount or null if no damage found
+const parseDamageFromMessage = (message) => {
+  if (!message || typeof message !== 'string') {
+    return null;
+  }
+
+  // First, try structured format: [DAMAGE:5] or [DAMAGE:2d6+3]
+  const structuredPattern = /\[DAMAGE:([^\]]+)\]/gi;
+  let match = structuredPattern.exec(message);
+  if (match) {
+    const damageStr = match[1].trim();
+    
+    // Check if it's a dice notation (e.g., "2d6+3")
+    const diceRegex = /^(\d+)?d(\d+)([+-]\d+)?$/;
+    if (diceRegex.test(damageStr)) {
+      // Parse and roll dice notation
+      const diceMatch = damageStr.match(diceRegex);
+      const numDice = parseInt(diceMatch[1] || '1', 10);
+      const sides = parseInt(diceMatch[2], 10);
+      const modifier = parseInt(diceMatch[3] || '0', 10);
+      
+      // Roll the dice
+      let total = 0;
+      for (let i = 0; i < numDice; i++) {
+        total += Math.floor(Math.random() * sides) + 1;
+      }
+      total += modifier;
+      
+      return Math.max(0, total); // Ensure non-negative
+    } else {
+      // Simple number
+      const damage = parseInt(damageStr, 10);
+      if (!isNaN(damage) && damage > 0) {
+        return damage;
+      }
+    }
+  }
+
+  // Try natural language patterns
+  // First, check if there's dice notation in the message and skip natural language parsing if found
+  // This prevents incorrectly matching "2d6 fire damage" as "6 damage"
+  const diceNotationPattern = /\b\d+d\d+(?:[+-]\d+)?\b/gi;
+  const hasDiceNotation = diceNotationPattern.test(message);
+  
+  // Only use natural language patterns if there's no dice notation
+  // (dice notation should use structured [DAMAGE:2d6] format)
+  if (!hasDiceNotation) {
+    const naturalPatterns = [
+      // "you take 5 damage" or "you take 5 points of damage"
+      // Negative lookahead to ensure we don't match "you take 2d6 damage"
+      /(?:you|character|player)\s+(?:take|takes|suffer|suffers|receive|receives)\s+(\d+)(?!d\d+)\s*(?:points?\s+of\s+)?damage/gi,
+      // "5 damage" or "5 slashing damage" - but not "2d6 damage"
+      // Negative lookahead ensures the number isn't followed by 'd' (dice notation)
+      /(?:^|[^d])\b(\d+)(?!d\d+)\s*(?:points?\s+of\s+)?(?:slashing|piercing|bludgeoning|fire|cold|lightning|thunder|acid|poison|radiant|necrotic|psychic|force)?\s*damage/gi,
+      // "deals 5 damage" or "deals 5 slashing damage"
+      /(?:deal|deals|dealt)\s+(\d+)(?!d\d+)\s*(?:points?\s+of\s+)?(?:slashing|piercing|bludgeoning|fire|cold|lightning|thunder|acid|poison|radiant|necrotic|psychic|force)?\s*damage/gi
+    ];
+
+    for (const pattern of naturalPatterns) {
+      // Reset regex lastIndex to start from beginning
+      pattern.lastIndex = 0;
+      match = pattern.exec(message);
+      if (match) {
+        // Double-check that the matched number isn't part of dice notation
+        const matchedNumber = match[1];
+        const matchIndex = match.index;
+        const beforeMatch = message.substring(Math.max(0, matchIndex - 10), matchIndex);
+        const afterMatch = message.substring(matchIndex + match[0].length, matchIndex + match[0].length + 10);
+        
+        // Check if this number is part of dice notation (e.g., "2d6" or "d6")
+        const isPartOfDiceNotation = /\d+d\d+/.test(beforeMatch + matchedNumber + afterMatch) ||
+                                     /d\d+/.test(beforeMatch + matchedNumber + afterMatch);
+        
+        if (!isPartOfDiceNotation) {
+          const damage = parseInt(matchedNumber, 10);
+          if (!isNaN(damage) && damage > 0) {
+            return damage;
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+};
+
+// Apply damage to a character, handling unconscious state
+const applyDamageToCharacter = async (characterId, damageAmount) => {
+  if (!characterId || !damageAmount || damageAmount <= 0) {
+    return null;
+  }
+
+  try {
+    // Load character from database
+    const character = await prisma.character.findUnique({
+      where: { id: characterId }
+    });
+
+    if (!character) {
+      console.error(`Character ${characterId} not found when applying damage`);
+      return null;
+    }
+
+    // Don't apply damage to deceased characters
+    if (character.status === 'deceased') {
+      return character;
+    }
+
+    // Calculate new HP (minimum 0)
+    const newHP = Math.max(0, character.currentHitPoints - damageAmount);
+    
+    const updateData = {
+      currentHitPoints: newHP
+    };
+
+    // If HP reaches 0 or below, set to unconscious
+    if (newHP <= 0) {
+      updateData.status = 'unconscious';
+      updateData.deathSavingThrowSuccesses = 0;
+      updateData.deathSavingThrowFailures = 0;
+    }
+
+    // Update character in database
+    const updatedCharacter = await prisma.character.update({
+      where: { id: characterId },
+      data: updateData
+    });
+
+    return updatedCharacter;
+  } catch (error) {
+    console.error('Error applying damage to character:', error);
+    return null;
+  }
+};
+
+// Apply healing to a character, handling unconscious state
+const applyHealingToCharacter = async (characterId, healingAmount) => {
+  if (!characterId || !healingAmount || healingAmount <= 0) {
+    return null;
+  }
+
+  try {
+    // Load character from database
+    const character = await prisma.character.findUnique({
+      where: { id: characterId }
+    });
+
+    if (!character) {
+      console.error(`Character ${characterId} not found when applying healing`);
+      return null;
+    }
+
+    // Don't heal deceased characters
+    if (character.status === 'deceased') {
+      return character;
+    }
+
+    // Calculate new HP (maximum is maxHitPoints)
+    const newHP = Math.min(character.maxHitPoints, character.currentHitPoints + healingAmount);
+    
+    const updateData = {
+      currentHitPoints: newHP
+    };
+
+    // If character was unconscious and now has HP > 0, revive them
+    if (character.status === 'unconscious' && newHP > 0) {
+      updateData.status = 'alive';
+      updateData.deathSavingThrowSuccesses = 0;
+      updateData.deathSavingThrowFailures = 0;
+    }
+
+    // Update character in database
+    const updatedCharacter = await prisma.character.update({
+      where: { id: characterId },
+      data: updateData
+    });
+
+    return updatedCharacter;
+  } catch (error) {
+    console.error('Error applying healing to character:', error);
+    return null;
+  }
+};
+
+// Process death saving throw for an unconscious character
+const processDeathSavingThrow = async (characterId, campaignId) => {
+  if (!characterId || !campaignId) {
+    return null;
+  }
+
+  try {
+    // Load character and campaign
+    const character = await prisma.character.findUnique({
+      where: { id: characterId }
+    });
+
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+      include: { gameState: true }
+    });
+
+    if (!character || !campaign) {
+      console.error(`Character or campaign not found for death saving throw`);
+      return null;
+    }
+
+    // Check if character is unconscious and in combat
+    if (character.status !== 'unconscious') {
+      return null; // Not unconscious, no death saving throw needed
+    }
+
+    // Check if character has already stabilized (3 successes)
+    if (character.deathSavingThrowSuccesses >= 3) {
+      return null; // Already stabilized
+    }
+
+    // Roll d20 (no modifiers for death saving throws)
+    const roll = Math.floor(Math.random() * 20) + 1;
+    
+    let message = '';
+    let newSuccesses = character.deathSavingThrowSuccesses;
+    let newFailures = character.deathSavingThrowFailures;
+    let newStatus = character.status;
+    let newHP = character.currentHitPoints;
+
+    // Process roll result
+    if (roll === 20) {
+      // Natural 20: Instant success - revive with 1 HP
+      newHP = 1;
+      newStatus = 'alive';
+      newSuccesses = 0;
+      newFailures = 0;
+      message = `Death Saving Throw: Rolled ${roll} (Natural 20!) - Critical Success! ${character.name} regains consciousness with 1 hit point.`;
+    } else if (roll === 1) {
+      // Natural 1: Counts as 2 failures
+      newFailures = Math.min(3, character.deathSavingThrowFailures + 2);
+      message = `Death Saving Throw: Rolled ${roll} (Natural 1) - Critical Failure! ${character.name} suffers 2 failures.`;
+    } else if (roll >= 10) {
+      // Success (10-19)
+      newSuccesses = Math.min(3, character.deathSavingThrowSuccesses + 1);
+      message = `Death Saving Throw: Rolled ${roll} - Success! ${character.name} has ${newSuccesses} success${newSuccesses !== 1 ? 'es' : ''} (${3 - newSuccesses} more needed to stabilize).`;
+    } else {
+      // Failure (2-9)
+      newFailures = Math.min(3, character.deathSavingThrowFailures + 1);
+      message = `Death Saving Throw: Rolled ${roll} - Failure! ${character.name} has ${newFailures} failure${newFailures !== 1 ? 's' : ''} (${3 - newFailures} more and they die).`;
+    }
+
+    // Check win/loss conditions
+    if (newFailures >= 3) {
+      // Character dies
+      newStatus = 'deceased';
+      message += ` ${character.name} has failed 3 death saving throws and dies.`;
+    } else if (newSuccesses >= 3) {
+      // Character stabilizes (but remains unconscious)
+      message += ` ${character.name} has succeeded on 3 death saving throws and stabilizes. They remain unconscious but are no longer dying.`;
+    }
+
+    // Update character
+    const updatedCharacter = await prisma.character.update({
+      where: { id: characterId },
+      data: {
+        currentHitPoints: newHP,
+        status: newStatus,
+        deathSavingThrowSuccesses: newSuccesses,
+        deathSavingThrowFailures: newFailures
+      }
+    });
+
+    // Create system message
+    await prisma.chatMessage.create({
+      data: {
+        campaignId: campaignId,
+        speaker: 'system',
+        message: message,
+        type: 'system'
+      }
+    });
+
+    // If character died, handle death
+    if (newStatus === 'deceased') {
+      await handleCharacterDeath(characterId, campaignId);
+    }
+
+    return updatedCharacter;
+  } catch (error) {
+    console.error('Error processing death saving throw:', error);
+    return null;
+  }
+};
+
+// Handle character death - end campaign and prevent future use
+const handleCharacterDeath = async (characterId, campaignId) => {
+  try {
+    // Set character status to deceased (already done in processDeathSavingThrow)
+    // Update campaign status to completed
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: {
+        status: 'completed'
+      }
+    });
+
+    // Create system message
+    await prisma.chatMessage.create({
+      data: {
+        campaignId: campaignId,
+        speaker: 'system',
+        message: `Character has died. The campaign has ended.`,
+        type: 'system'
+      }
+    });
+  } catch (error) {
+    console.error('Error handling character death:', error);
+  }
+};
+
+// Add items to character inventory, merging duplicates by incrementing quantity
+const addItemsToCharacterInventory = async (characterId, items) => {
+  if (!characterId || !items || !Array.isArray(items) || items.length === 0) {
+    return;
+  }
+
+  try {
+    // First, deduplicate the input items array (merge quantities for same items)
+    // This prevents issues where the same item appears multiple times in the input
+    const itemMap = new Map();
+    for (const { item, quantity } of items) {
+      // Skip invalid items
+      if (!item || typeof item !== 'string' || item.trim().length === 0) {
+        continue;
+      }
+
+      const itemName = item.trim();
+      const itemQuantity = Math.max(1, parseInt(quantity, 10) || 1);
+      const normalized = itemName.toLowerCase();
+
+      // Merge quantities for duplicate items in the input
+      if (itemMap.has(normalized)) {
+        itemMap.set(normalized, {
+          item: itemMap.get(normalized).item, // Keep original casing from first occurrence
+          quantity: itemMap.get(normalized).quantity + itemQuantity
+        });
+      } else {
+        itemMap.set(normalized, { item: itemName, quantity: itemQuantity });
+      }
+    }
+
+    // Convert deduplicated map back to array
+    const deduplicatedItems = Array.from(itemMap.values());
+
+    if (deduplicatedItems.length === 0) {
+      return;
+    }
+
+    // Get current character equipment
+    const character = await prisma.character.findUnique({
+      where: { id: characterId },
+      include: { equipment: true }
+    });
+
+    if (!character) {
+      console.error(`Character ${characterId} not found when adding items`);
+      return;
+    }
+
+    // Process each deduplicated item
+    for (const { item, quantity } of deduplicatedItems) {
+      const itemName = item.trim();
+      const itemQuantity = Math.max(1, parseInt(quantity, 10) || 1);
+
+      // Check if character already has this item (case-insensitive)
+      const existingEquipment = character.equipment.find(
+        eq => eq.item.toLowerCase().trim() === itemName.toLowerCase()
+      );
+
+      if (existingEquipment) {
+        // Increment quantity for existing item
+        await prisma.equipment.update({
+          where: { id: existingEquipment.id },
+          data: {
+            quantity: existingEquipment.quantity + itemQuantity
+          }
+        });
+      } else {
+        // Create new equipment entry
+        const newEquipment = await prisma.equipment.create({
+          data: {
+            characterId: characterId,
+            item: itemName,
+            quantity: itemQuantity,
+            equipped: false
+          }
+        });
+        
+        // Add the newly created item to the in-memory array to prevent duplicate creation
+        // if the same item appears again in a future iteration (defensive programming)
+        character.equipment.push(newEquipment);
+      }
+    }
+  } catch (error) {
+    console.error('Error adding items to character inventory:', error);
+    // Don't throw - we don't want to break the main flow if inventory update fails
+  }
+};
+
 // Create a new campaign
 router.post('/', auth, async (req, res) => {
   try {
@@ -211,6 +829,25 @@ router.post('/', auth, async (req, res) => {
       characterId, // Character to use in the campaign
       aiDmSettings // AI DM personality and settings
     } = req.body;
+
+    // Check if character exists and is not deceased
+    if (characterId) {
+      const character = await prisma.character.findUnique({
+        where: { id: characterId }
+      });
+
+      if (!character) {
+        return res.status(404).json({ error: 'Character not found' });
+      }
+
+      if (character.userId !== req.user.id) {
+        return res.status(403).json({ error: 'Not authorized to use this character' });
+      }
+
+      if (character.status === 'deceased') {
+        return res.status(400).json({ error: 'Cannot use a deceased character in a new campaign' });
+      }
+    }
 
     // Generate initial campaign setting (for DM's reference)
     const campaignSetting = await llmService.generateCampaignSetting({
@@ -259,7 +896,12 @@ router.post('/', auth, async (req, res) => {
         }
       },
       include: {
-        character: true,
+        character: {
+          include: {
+            proficiencies: true,
+            equipment: true
+          }
+        },
         aiDmSettings: true,
         gameState: true,
         player: true,
@@ -318,7 +960,12 @@ router.get('/', auth, async (req, res) => {
         playerId: req.user.id
       },
       include: {
-        character: true,
+        character: {
+          include: {
+            proficiencies: true,
+            equipment: true
+          }
+        },
         aiDmSettings: true,
         gameState: true
       }
@@ -337,7 +984,12 @@ router.get('/:id', auth, async (req, res) => {
     const campaign = await prisma.campaign.findUnique({
       where: { id: req.params.id },
       include: {
-        character: true,
+        character: {
+          include: {
+            proficiencies: true,
+            equipment: true
+          }
+        },
         aiDmSettings: true,
         npcs: true,
         chatHistory: {
@@ -392,7 +1044,12 @@ router.patch('/:id/settings', auth, async (req, res) => {
         }
       },
       include: {
-        character: true,
+        character: {
+          include: {
+            proficiencies: true,
+            equipment: true
+          }
+        },
         aiDmSettings: true,
         gameState: true
       }
@@ -411,7 +1068,12 @@ router.post('/:id/action', auth, async (req, res) => {
     const campaign = await prisma.campaign.findUnique({
       where: { id: req.params.id },
       include: {
-        character: true,
+        character: {
+          include: {
+            proficiencies: true,
+            equipment: true
+          }
+        },
         aiDmSettings: true,
         gameState: true,
         chatHistory: {
@@ -461,6 +1123,54 @@ router.post('/:id/action', auth, async (req, res) => {
     const actionUpdates = extractCampaignMentions(dmResponse.message);
     await applyCampaignUpdates(campaign, actionUpdates);
 
+    // Parse and apply damage from DM response
+    if (campaign.characterId) {
+      const damageAmount = parseDamageFromMessage(dmResponse.message);
+      if (damageAmount && damageAmount > 0) {
+        const updatedCharacter = await applyDamageToCharacter(campaign.characterId, damageAmount);
+        if (updatedCharacter && updatedCharacter.status === 'unconscious') {
+          // Create system message about falling unconscious
+          await prisma.chatMessage.create({
+            data: {
+              campaignId: campaign.id,
+              speaker: 'system',
+              message: `${updatedCharacter.name} falls unconscious!`,
+              type: 'system'
+            }
+          });
+        }
+      }
+    }
+
+    // Extract and add items to character inventory
+    if (campaign.characterId) {
+      const itemsToAdd = [];
+      
+      // Extract items from DM response (loot sections and structured format)
+      // Items from DM response are trusted (DM explicitly gave them)
+      const lootItems = actionUpdates.loot || [];
+      for (const lootText of lootItems) {
+        itemsToAdd.push(...parseItemsFromText(lootText));
+      }
+      
+      // Extract structured items from DM response (these are explicitly marked)
+      itemsToAdd.push(...parseStructuredItems(dmResponse.message));
+      
+      // Extract items from player action if they mentioned picking up items
+      // These need validation to ensure they're actual items, not descriptive text
+      if (action.description) {
+        const playerItemCandidates = detectPlayerItemAcquisition(action.description);
+        // Validate player-acquired items using LLM
+        const validatedPlayerItems = await validateItems(playerItemCandidates, action.description);
+        itemsToAdd.push(...validatedPlayerItems);
+      }
+      
+      // Add all detected items to character inventory
+      if (itemsToAdd.length > 0) {
+        await addItemsToCharacterInventory(campaign.characterId, itemsToAdd);
+      }
+    }
+
     // Update game state if needed
     if (action.type === 'combat_action' || dmResponse.type === 'combat') {
       await prisma.gameState.update({
@@ -473,6 +1183,35 @@ router.post('/:id/action', auth, async (req, res) => {
       });
     }
 
+    // Check for automatic death saving throw if character is unconscious and in combat
+    if (campaign.characterId && campaign.gameState && campaign.gameState.combatActive) {
+      // Reload character to get latest status
+      const currentCharacter = await prisma.character.findUnique({
+        where: { id: campaign.characterId }
+      });
+      
+      if (currentCharacter && currentCharacter.status === 'unconscious' && currentCharacter.deathSavingThrowSuccesses < 3) {
+        await processDeathSavingThrow(campaign.characterId, campaign.id);
+      }
+    }
+
+    // Reload campaign with updated character equipment (for potential future use)
+    // Note: We don't return it in the response to maintain backward compatibility
+    await prisma.campaign.findUnique({
+      where: { id: campaign.id },
+      include: {
+        character: {
+          include: {
+            proficiencies: true,
+            equipment: true
+          }
+        },
+        aiDmSettings: true,
+        gameState: true
+      }
+    });
+
+    // Return response in original format for backward compatibility
     res.json({
       playerMessage,
       dmResponse: dmMessage
@@ -489,7 +1228,12 @@ router.post('/:id/chat', auth, async (req, res) => {
     const campaign = await prisma.campaign.findUnique({
       where: { id: req.params.id },
       include: {
-        character: true,
+        character: {
+          include: {
+            proficiencies: true,
+            equipment: true
+          }
+        },
         aiDmSettings: true,
         gameState: true,
         chatHistory: {
@@ -569,6 +1313,82 @@ router.post('/:id/chat', auth, async (req, res) => {
     const chatUpdates = extractCampaignMentions(dmResponse.message);
     await applyCampaignUpdates(campaign, chatUpdates);
 
+    // Parse and apply damage from DM response
+    if (campaign.characterId) {
+      const damageAmount = parseDamageFromMessage(dmResponse.message);
+      if (damageAmount && damageAmount > 0) {
+        const updatedCharacter = await applyDamageToCharacter(campaign.characterId, damageAmount);
+        if (updatedCharacter && updatedCharacter.status === 'unconscious') {
+          // Create system message about falling unconscious
+          await prisma.chatMessage.create({
+            data: {
+              campaignId: campaign.id,
+              speaker: 'system',
+              message: `${updatedCharacter.name} falls unconscious!`,
+              type: 'system'
+            }
+          });
+        }
+      }
+    }
+
+    // Extract and add items to character inventory
+    if (campaign.characterId) {
+      const itemsToAdd = [];
+      
+      // Extract items from DM response (loot sections and structured format)
+      // Items from DM response are trusted (DM explicitly gave them)
+      const lootItems = chatUpdates.loot || [];
+      for (const lootText of lootItems) {
+        itemsToAdd.push(...parseItemsFromText(lootText));
+      }
+      
+      // Extract structured items from DM response (these are explicitly marked)
+      itemsToAdd.push(...parseStructuredItems(dmResponse.message));
+      
+      // Extract items from player message if they mentioned picking up items
+      // These need validation to ensure they're actual items, not descriptive text
+      if (message) {
+        const playerItemCandidates = detectPlayerItemAcquisition(message);
+        // Validate player-acquired items using LLM
+        const validatedPlayerItems = await validateItems(playerItemCandidates, message);
+        itemsToAdd.push(...validatedPlayerItems);
+      }
+      
+      // Add all detected items to character inventory
+      if (itemsToAdd.length > 0) {
+        await addItemsToCharacterInventory(campaign.characterId, itemsToAdd);
+      }
+    }
+
+    // Check for automatic death saving throw if character is unconscious and in combat
+    if (campaign.characterId && campaign.gameState && campaign.gameState.combatActive) {
+      // Reload character to get latest status
+      const currentCharacter = await prisma.character.findUnique({
+        where: { id: campaign.characterId }
+      });
+      
+      if (currentCharacter && currentCharacter.status === 'unconscious' && currentCharacter.deathSavingThrowSuccesses < 3) {
+        await processDeathSavingThrow(campaign.characterId, campaign.id);
+      }
+    }
+
+    // Reload campaign with updated character equipment (for potential future use)
+    // Note: We don't return it in the response to maintain backward compatibility
+    await prisma.campaign.findUnique({
+      where: { id: campaign.id },
+      include: {
+        character: {
+          include: {
+            proficiencies: true,
+            equipment: true
+          }
+        },
+        aiDmSettings: true,
+        gameState: true
+      }
+    });
+
     // Add metadata to the response
     const responseMessages = [
       {
@@ -581,6 +1401,7 @@ router.post('/:id/chat', auth, async (req, res) => {
       }
     ];
 
+    // Return response in original format for backward compatibility
     res.json(responseMessages);
   } catch (error) {
     console.error('Chat message error:', error);
@@ -595,7 +1416,12 @@ router.post('/:id/roll', auth, async (req, res) => {
     const campaign = await prisma.campaign.findUnique({
       where: { id: req.params.id },
       include: {
-        character: true,
+        character: {
+          include: {
+            proficiencies: true,
+            equipment: true
+          }
+        },
         aiDmSettings: true,
         gameState: true,
         chatHistory: {
@@ -627,7 +1453,30 @@ router.post('/:id/roll', auth, async (req, res) => {
     const matches = diceNotation.match(diceRegex);
     const count = matches[1] ? parseInt(matches[1]) : 1;
     const sides = parseInt(matches[2]);
-    const modifier = matches[3] ? parseInt(matches[3]) : 0;
+    const manualModifier = matches[3] ? parseInt(matches[3]) : 0;
+    
+    // Calculate character modifier based on reason if it's a skill check or saving throw
+    let characterModifier = 0;
+    if (campaign.character && reason && sides === 20) {
+      // Check if reason indicates a skill check
+      const skillCheckPattern = /(athletics|acrobatics|sleight of hand|stealth|arcana|history|investigation|nature|religion|animal handling|insight|medicine|perception|survival|deception|intimidation|performance|persuasion)/i;
+      const skillMatch = reason.match(skillCheckPattern);
+      
+      if (skillMatch) {
+        // It's a skill check - calculate modifier
+        const skillName = skillMatch[1].toLowerCase().replace(/\s+/g, '_');
+        characterModifier = llmService._getSkillModifier(campaign.character, skillName);
+      } else {
+        // Check if it's a saving throw
+        const savingThrowPattern = /(strength|dexterity|constitution|intelligence|wisdom|charisma)\s+(?:saving\s+)?throw/i;
+        const savingThrowMatch = reason.match(savingThrowPattern);
+        
+        if (savingThrowMatch) {
+          const abilityName = savingThrowMatch[1].toLowerCase();
+          characterModifier = llmService._getSavingThrowModifier(campaign.character, abilityName);
+        }
+      }
+    }
     
     // Roll the dice
     const rolls = [];
@@ -639,13 +1488,27 @@ router.post('/:id/roll', auth, async (req, res) => {
       total += roll;
     }
     
-    // Add modifier
-    const finalTotal = total + modifier;
+    // Add modifiers (manual modifier from notation + character modifier)
+    const finalTotal = total + manualModifier + characterModifier;
+    
+    // Calculate total modifier
+    const totalModifier = manualModifier + characterModifier;
     
     // Create a descriptive message
+    // Note: diceNotation already includes manual modifier (e.g., "d20+3")
+    // So we only add modifier text if there's a character modifier to show
     const rollDescription = reason ? `${reason}: ` : '';
     const rollDetails = rolls.length > 1 ? `[${rolls.join(', ')}]` : '';
-    const modifierText = modifier ? (modifier > 0 ? ` + ${modifier}` : ` - ${Math.abs(modifier)}`) : '';
+    let modifierText = '';
+    
+    // Only show additional modifier text if there's a character modifier
+    // The manual modifier is already included in diceNotation, so we don't duplicate it
+    if (characterModifier !== 0) {
+      // Show character modifier separately since it's not in the notation
+      modifierText = characterModifier > 0 ? ` + ${characterModifier}` : ` - ${Math.abs(characterModifier)}`;
+      modifierText += ` (character modifier)`;
+    }
+    // If only manual modifier exists, it's already in diceNotation, so no extra text needed
     
     const message = `${rollDescription}Rolled ${diceNotation} ${rollDetails}${modifierText} = ${finalTotal}`;
     
@@ -659,7 +1522,9 @@ router.post('/:id/roll', auth, async (req, res) => {
         metadataStr: JSON.stringify({
           diceNotation,
           rolls,
-          modifier,
+          modifier: totalModifier,
+          manualModifier,
+          characterModifier,
           total: finalTotal,
           reason
         })
@@ -672,7 +1537,9 @@ router.post('/:id/roll', auth, async (req, res) => {
       result: finalTotal,
       diceNotation,
       rolls,
-      modifier,
+      modifier: totalModifier,
+      manualModifier,
+      characterModifier,
       total: finalTotal,
       reason
     };
@@ -697,7 +1564,9 @@ router.post('/:id/roll', auth, async (req, res) => {
           rollContext: {
             diceNotation,
             rolls,
-            modifier,
+            modifier: totalModifier,
+            manualModifier,
+            characterModifier,
             total: finalTotal,
             reason
           }
@@ -745,6 +1614,25 @@ router.post('/:id/roll', auth, async (req, res) => {
       // Apply any campaign updates from DM response
       const rollUpdates = extractCampaignMentions(dmResponse.message);
       await applyCampaignUpdates(campaign, rollUpdates);
+
+      // Extract and add items to character inventory
+      if (campaign.characterId) {
+        const itemsToAdd = [];
+        
+        // Extract items from DM response (loot sections and structured format)
+        const lootItems = rollUpdates.loot || [];
+        for (const lootText of lootItems) {
+          itemsToAdd.push(...parseItemsFromText(lootText));
+        }
+        
+        // Extract structured items from DM response
+        itemsToAdd.push(...parseStructuredItems(dmResponse.message));
+        
+        // Add all detected items to character inventory
+        if (itemsToAdd.length > 0) {
+          await addItemsToCharacterInventory(campaign.characterId, itemsToAdd);
+        }
+      }
       
     } catch (llmError) {
       // Log error but don't fail the request - still return the roll result
@@ -759,7 +1647,9 @@ router.post('/:id/roll', auth, async (req, res) => {
         diceNotation,
         rolls,
         total: finalTotal,
-        modifier,
+        modifier: totalModifier,
+        manualModifier,
+        characterModifier,
         message
       },
       chatMessage

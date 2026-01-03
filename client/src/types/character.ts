@@ -3,6 +3,13 @@ export type Ability = {
   modifier: number;
 };
 
+export type Equipment = {
+  id?: string;
+  item: string;
+  quantity: number;
+  equipped: boolean;
+};
+
 export const CHARACTER_RACES = [
   'Dragonborn',
   'Dwarf',
@@ -60,4 +67,12 @@ export interface Character {
   speed: number;
   proficiencyBonus: number;
   backstory: string;
+  status?: 'alive' | 'unconscious' | 'deceased';
+  deathSavingThrowSuccesses?: number;
+  deathSavingThrowFailures?: number;
+  equipment?: Equipment[];
+  proficiencies?: Array<{
+    type: string;
+    name: string;
+  }>;
 } 

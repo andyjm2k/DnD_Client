@@ -1,19 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Campaign, ChatMessage, CampaignTextLogEntry, QuestLogEntry } from '../types/campaign';
+import { Character } from '../types/character';
 import { campaignService } from '../services/campaignService';
-
-// Dice presets for quick rolling
-const DICE_PRESETS = [
-  { label: 'd20', notation: 'd20' },
-  { label: 'd12', notation: 'd12' },
-  { label: 'd10', notation: 'd10' },
-  { label: 'd8', notation: 'd8' },
-  { label: 'd6', notation: 'd6' },
-  { label: 'd4', notation: 'd4' },
-  { label: '2d6', notation: '2d6' },
-  { label: '3d6', notation: '3d6' }
-];
+import { characterService } from '../services/characterService';
+import CharacterSheetPanel from '../components/character/CharacterSheetPanel';
+import GameActionsPanel from '../components/campaign/GameActionsPanel';
 
 const parseJsonLog = <T,>(value?: string | null): T[] => {
   if (!value) {
@@ -39,6 +31,115 @@ const parseObjectives = (objectives: string | null | undefined) => {
     .filter(Boolean);
 };
 
+// Helper function to decode HTML entities in portrait URLs
+const decodeHtmlEntities = (str: string): string => {
+  try {
+    // Create a temporary textarea element to decode HTML entities
+    // This handles entities like &#x2F; (/) and &amp; (&)
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = str;
+    return textarea.value;
+  } catch (error) {
+    // Fallback: manually replace common HTML entities if DOM method fails
+    console.warn('Failed to decode HTML entities using DOM method, using fallback:', error);
+    return str
+      .replace(/&#x2F;/g, '/')
+      .replace(/&#x2f;/g, '/')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+  }
+};
+
+// Check if a string is likely base64 encoded
+const isLikelyBase64 = (value: string) => /^[A-Za-z0-9+/=]+$/.test(value);
+
+// Normalize portrait URL by decoding HTML entities and validating format
+const normalizePortrait = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  // Decode HTML entities first (e.g., &#x2F; becomes /)
+  const decoded = decodeHtmlEntities(value);
+  const trimmed = decoded.trim();
+  
+  if (!trimmed || trimmed === 'null' || trimmed === 'undefined') {
+    return null;
+  }
+
+  // Check if it's already a valid data URL, blob URL, HTTP URL, or relative path
+  if (
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('blob:') ||
+    /^https?:\/\//.test(trimmed) ||
+    /^\/(?!\/)/.test(trimmed)
+  ) {
+    return trimmed;
+  }
+
+  // If it looks like base64, prepend the data URL prefix
+  if (isLikelyBase64(trimmed)) {
+    return `data:image/png;base64,${trimmed}`;
+  }
+
+  return null;
+};
+
+// Helper function to transform server character data to client Character format
+const transformCharacter = (serverChar: any): Character => {
+  const calculateModifier = (score: number): number => {
+    return Math.floor((score - 10) / 2);
+  };
+
+  const strength = serverChar.strength ?? 10;
+  const dexterity = serverChar.dexterity ?? 10;
+  const constitution = serverChar.constitution ?? 10;
+  const intelligence = serverChar.intelligence ?? 10;
+  const wisdom = serverChar.wisdom ?? 10;
+  const charisma = serverChar.charisma ?? 10;
+
+  return {
+    id: serverChar.id,
+    name: serverChar.name,
+    portrait: normalizePortrait(serverChar.portrait),
+    race: serverChar.race,
+    class: serverChar.class,
+    level: serverChar.level || 1,
+    background: serverChar.background || '',
+    alignment: serverChar.alignment || 'True Neutral',
+    experience: serverChar.experience || 0,
+    abilities: {
+      strength: { score: strength, modifier: calculateModifier(strength) },
+      dexterity: { score: dexterity, modifier: calculateModifier(dexterity) },
+      constitution: { score: constitution, modifier: calculateModifier(constitution) },
+      intelligence: { score: intelligence, modifier: calculateModifier(intelligence) },
+      wisdom: { score: wisdom, modifier: calculateModifier(wisdom) },
+      charisma: { score: charisma, modifier: calculateModifier(charisma) },
+    },
+    hitPoints: {
+      maximum: serverChar.maxHitPoints || 10,
+      current: serverChar.currentHitPoints || 10,
+    },
+    armorClass: serverChar.armorClass || 10,
+    speed: serverChar.speed || 30,
+    proficiencyBonus: Math.ceil((serverChar.level || 1) / 4) + 1,
+    backstory: serverChar.backstory || '',
+    status: serverChar.status || 'alive',
+    deathSavingThrowSuccesses: serverChar.deathSavingThrowSuccesses || 0,
+    deathSavingThrowFailures: serverChar.deathSavingThrowFailures || 0,
+    equipment: serverChar.equipment?.map((eq: any) => ({
+      id: eq.id,
+      item: eq.item,
+      quantity: eq.quantity,
+      equipped: eq.equipped || false
+    })) || [],
+    proficiencies: serverChar.proficiencies || [],
+  };
+};
+
 const CampaignDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -57,6 +158,16 @@ const CampaignDetails: React.FC = () => {
   
   // Collapse state for sections between Description and Game Actions
   const [isSectionsCollapsed, setIsSectionsCollapsed] = useState(false);
+  
+  // Character sheet panel state
+  const [isCharacterSheetOpen, setIsCharacterSheetOpen] = useState(false);
+  const [character, setCharacter] = useState<Character | null>(null);
+  
+  // Game Actions panel state
+  const [isGameActionsOpen, setIsGameActionsOpen] = useState(false);
+  
+  // Ref for Game Log auto-scroll
+  const gameLogRef = useRef<HTMLDivElement>(null);
 
   const loadCampaign = useCallback(async () => {
     if (!id) return;
@@ -64,6 +175,20 @@ const CampaignDetails: React.FC = () => {
     try {
       const data = await campaignService.getCampaign(id);
       setCampaign(data);
+      
+      // Transform and set character data if available
+      if (data.character) {
+        const transformedCharacter = transformCharacter(data.character);
+        setCharacter(transformedCharacter);
+      } else if (data.characterId) {
+        // If character is not included, fetch it separately
+        try {
+          const charData = await characterService.getCharacter(data.characterId);
+          setCharacter(charData);
+        } catch (err) {
+          console.error('Error loading character:', err);
+        }
+      }
       
       // Set the game log from chat history
       if (data.chatHistory && data.chatHistory.length > 0) {
@@ -82,6 +207,25 @@ const CampaignDetails: React.FC = () => {
   useEffect(() => {
     loadCampaign();
   }, [id, loadCampaign]);
+
+  // Auto-scroll Game Log to bottom when new messages are added
+  useEffect(() => {
+    if (gameLogRef.current) {
+      // Check if user is near the bottom (within 50px) before auto-scrolling
+      const container = gameLogRef.current;
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+      
+      // Only auto-scroll if user is near the bottom
+      if (isNearBottom) {
+        // Use setTimeout to ensure DOM has updated
+        setTimeout(() => {
+          if (gameLogRef.current) {
+            gameLogRef.current.scrollTop = gameLogRef.current.scrollHeight;
+          }
+        }, 0);
+      }
+    }
+  }, [gameLog]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -311,12 +455,56 @@ const CampaignDetails: React.FC = () => {
     <div className="max-w-4xl mx-auto p-6">
       <div className="bg-white shadow-lg rounded-lg overflow-hidden">
         {/* Campaign Header */}
-        <div className="bg-indigo-600 text-white px-6 py-4">
-          <h1 className="text-3xl font-bold">{campaign.title}</h1>
-          <div className="mt-2 text-indigo-100">
-            <span className="mr-4">Setting: {campaign.setting}</span>
-            <span>Tone: {campaign.tone}</span>
+        <div className="bg-indigo-600 text-white px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={() => setIsGameActionsOpen(!isGameActionsOpen)}
+              className="bg-indigo-700 hover:bg-indigo-800 px-4 py-2 rounded-lg transition-colors flex items-center space-x-2"
+              title="Toggle Game Actions"
+            >
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 6h16M4 12h16M4 18h16"
+                />
+              </svg>
+              <span>Game Actions</span>
+            </button>
+            <div>
+              <h1 className="text-3xl font-bold">{campaign.title}</h1>
+              <div className="mt-2 text-indigo-100">
+                <span className="mr-4">Setting: {campaign.setting}</span>
+                <span>Tone: {campaign.tone}</span>
+              </div>
+            </div>
           </div>
+          <button
+            onClick={() => setIsCharacterSheetOpen(!isCharacterSheetOpen)}
+            className="bg-indigo-700 hover:bg-indigo-800 px-4 py-2 rounded-lg transition-colors flex items-center space-x-2"
+            title="Toggle Character Sheet"
+          >
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              />
+            </svg>
+            <span>Character Sheet</span>
+          </button>
         </div>
 
         {/* Campaign Content */}
@@ -429,122 +617,13 @@ const CampaignDetails: React.FC = () => {
             </>
           )}
 
-          {/* Game Actions */}
-          <div>
-            <h2 className="text-xl font-semibold mb-2">Game Actions</h2>
-            <div className="flex flex-wrap gap-2">
-              <button 
-                onClick={() => handleGameAction('skill_check')}
-                className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
-                disabled={sendingMessage}
-              >
-                Skill Check
-              </button>
-              <button 
-                onClick={() => handleGameAction('combat_action')}
-                className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
-                disabled={sendingMessage}
-              >
-                Combat Action
-              </button>
-              <button 
-                onClick={() => handleGameAction('spell')}
-                className="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600"
-                disabled={sendingMessage}
-              >
-                Cast Spell
-              </button>
-              <button 
-                onClick={() => handleGameAction('investigate')}
-                className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-                disabled={sendingMessage}
-              >
-                Investigate
-              </button>
-              <button 
-                onClick={() => handleGameAction('action')}
-                className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600"
-                disabled={sendingMessage}
-              >
-                Custom Action
-              </button>
-              <button 
-                onClick={() => setShowDiceRoller(!showDiceRoller)}
-                className="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600"
-                disabled={sendingMessage}
-              >
-                {showDiceRoller ? 'Hide Dice Roller' : 'Show Dice Roller'}
-              </button>
-            </div>
-          </div>
-
-          {/* Dice Roller */}
-          {showDiceRoller && (
-            <div className="bg-gray-100 p-4 rounded-lg">
-              <h3 className="font-semibold mb-2">Dice Roller</h3>
-              
-              {/* Dice presets */}
-              <div className="mb-3">
-                <p className="text-sm mb-1">Quick Roll:</p>
-                <div className="flex flex-wrap gap-2">
-                  {DICE_PRESETS.map((dice, index) => (
-                    <button
-                      key={index}
-                      onClick={() => handleRollDice(dice.notation)}
-                      className="bg-indigo-500 text-white px-3 py-1 rounded text-sm hover:bg-indigo-600"
-                      disabled={rollingDice}
-                    >
-                      {dice.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              
-              {/* Custom dice form */}
-              <form onSubmit={handleCustomDiceRoll} className="space-y-2">
-                <div>
-                  <label htmlFor="customDice" className="block text-sm mb-1">
-                    Custom Roll (e.g., d20, 2d6, d8+3):
-                  </label>
-                  <input
-                    id="customDice"
-                    type="text"
-                    value={customDice}
-                    onChange={(e) => setCustomDice(e.target.value)}
-                    placeholder="Enter dice notation"
-                    className="w-full px-3 py-2 border rounded"
-                    disabled={rollingDice}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="diceReason" className="block text-sm mb-1">
-                    Reason (optional):
-                  </label>
-                  <input
-                    id="diceReason"
-                    type="text"
-                    value={diceReason}
-                    onChange={(e) => setDiceReason(e.target.value)}
-                    placeholder="E.g., Stealth Check, Attack Roll"
-                    className="w-full px-3 py-2 border rounded"
-                    disabled={rollingDice}
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="bg-indigo-500 text-white px-4 py-2 rounded hover:bg-indigo-600"
-                  disabled={rollingDice || !customDice.trim()}
-                >
-                  {rollingDice ? 'Rolling...' : 'Roll Dice'}
-                </button>
-              </form>
-            </div>
-          )}
-
           {/* Chat History */}
           <div>
             <h2 className="text-xl font-semibold mb-2">Game Log</h2>
-            <div className="space-y-4 max-h-80 overflow-y-auto p-4 border rounded-lg bg-gray-50">
+            <div 
+              ref={gameLogRef}
+              className="space-y-4 max-h-[calc(100vh-400px)] overflow-y-auto p-4 border rounded-lg bg-gray-50"
+            >
               {gameLog.map((message, index) => (
                 <div
                   key={message.id || index}
@@ -567,28 +646,72 @@ const CampaignDetails: React.FC = () => {
 
           {/* Chat Input */}
           <div>
-            <form onSubmit={handleSendMessage} className="mt-4">
-              <div className="flex">
-                <input
-                  type="text"
-                  value={playerMessage}
-                  onChange={(e) => setPlayerMessage(e.target.value)}
-                  placeholder="What do you want to do or say?"
-                  className="flex-grow border rounded-l px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  disabled={sendingMessage}
-                />
-                <button
-                  type="submit"
-                  className="bg-indigo-500 text-white px-4 py-2 rounded-r hover:bg-indigo-600 transition-colors"
-                  disabled={sendingMessage}
-                >
-                  {sendingMessage ? 'Sending...' : 'Send'}
-                </button>
+            {(campaign.status === 'completed' || character?.status === 'deceased') ? (
+              <div className="mt-4 p-4 bg-red-100 border-2 border-red-500 rounded-lg">
+                <p className="text-red-700 font-semibold">
+                  {character?.status === 'deceased' 
+                    ? 'Your character has died. This campaign has ended.' 
+                    : 'This campaign has been completed.'}
+                </p>
               </div>
-            </form>
+            ) : (
+              <form onSubmit={handleSendMessage} className="mt-4">
+                <div className="flex">
+                  <input
+                    type="text"
+                    value={playerMessage}
+                    onChange={(e) => setPlayerMessage(e.target.value)}
+                    placeholder="What do you want to do or say?"
+                    className="flex-grow border rounded-l px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    disabled={sendingMessage || character?.status === 'unconscious'}
+                  />
+                  <button
+                    type="submit"
+                    className="bg-indigo-500 text-white px-4 py-2 rounded-r hover:bg-indigo-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    disabled={sendingMessage || character?.status === 'unconscious'}
+                  >
+                    {sendingMessage ? 'Sending...' : 'Send'}
+                  </button>
+                </div>
+                {character?.status === 'unconscious' && (
+                  <p className="mt-2 text-sm text-yellow-700">
+                    Your character is unconscious and cannot act. Death saving throws are being made automatically.
+                  </p>
+                )}
+              </form>
+            )}
           </div>
         </div>
       </div>
+
+      {/* Game Actions Panel */}
+      <GameActionsPanel
+        isOpen={isGameActionsOpen}
+        onClose={() => setIsGameActionsOpen(false)}
+        onGameAction={handleGameAction}
+        showDiceRoller={showDiceRoller}
+        onToggleDiceRoller={() => setShowDiceRoller(!showDiceRoller)}
+        customDice={customDice}
+        setCustomDice={setCustomDice}
+        diceReason={diceReason}
+        setDiceReason={setDiceReason}
+        onRollDice={handleRollDice}
+        onCustomDiceRoll={handleCustomDiceRoll}
+        rollingDice={rollingDice}
+        sendingMessage={sendingMessage}
+      />
+
+      {/* Character Sheet Panel */}
+      <CharacterSheetPanel
+        character={character}
+        isOpen={isCharacterSheetOpen}
+        onClose={() => setIsCharacterSheetOpen(false)}
+        onCharacterUpdate={async (updatedCharacter) => {
+          setCharacter(updatedCharacter);
+          // Reload campaign to get updated character data
+          await loadCampaign();
+        }}
+      />
     </div>
   );
 };

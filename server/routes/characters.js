@@ -43,7 +43,8 @@ router.post('/', auth, async (req, res) => {
         equipment: {
           create: equipment.map(e => ({
             item: e.item,
-            quantity: e.quantity
+            quantity: e.quantity,
+            equipped: e.equipped || false
           }))
         },
         spells: {
@@ -86,12 +87,15 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-// Get all characters for current user
+// Get all characters for current user (excluding deceased characters)
 router.get('/', auth, async (req, res) => {
   try {
     const characters = await prisma.character.findMany({
       where: {
-        userId: req.user.id
+        userId: req.user.id,
+        status: {
+          not: 'deceased' // Filter out deceased characters
+        }
       },
       include: {
         proficiencies: true,
@@ -153,6 +157,11 @@ router.patch('/:id', auth, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to update this character' });
     }
 
+    // Prevent updating deceased characters
+    if (character.status === 'deceased') {
+      return res.status(400).json({ error: 'Cannot update a deceased character' });
+    }
+
     const {
       name, portrait, race, class: characterClass, background, alignment,
       attributes, hitPoints, armorClass, proficiencies,
@@ -189,7 +198,8 @@ router.patch('/:id', auth, async (req, res) => {
           deleteMany: {},
           create: equipment?.map(e => ({
             item: e.item,
-            quantity: e.quantity
+            quantity: e.quantity,
+            equipped: e.equipped || false
           }))
         },
         spells: {
@@ -247,6 +257,50 @@ router.delete('/:id', auth, async (req, res) => {
   } catch (error) {
     console.error('Delete character error:', error);
     res.status(500).json({ error: 'Error deleting character' });
+  }
+});
+
+// Toggle equipment equipped status
+router.patch('/:id/equipment/:equipmentId', auth, async (req, res) => {
+  try {
+    // First verify the character exists and belongs to the user
+    const character = await prisma.character.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!character) {
+      return res.status(404).json({ error: 'Character not found' });
+    }
+
+    if (character.userId !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized to modify this character' });
+    }
+
+    // Verify the equipment belongs to this character
+    const equipment = await prisma.equipment.findUnique({
+      where: { id: req.params.equipmentId }
+    });
+
+    if (!equipment) {
+      return res.status(404).json({ error: 'Equipment not found' });
+    }
+
+    if (equipment.characterId !== character.id) {
+      return res.status(403).json({ error: 'Equipment does not belong to this character' });
+    }
+
+    // Toggle the equipped status
+    const updatedEquipment = await prisma.equipment.update({
+      where: { id: req.params.equipmentId },
+      data: {
+        equipped: !equipment.equipped
+      }
+    });
+
+    res.json(updatedEquipment);
+  } catch (error) {
+    console.error('Toggle equipment error:', error);
+    res.status(500).json({ error: 'Error toggling equipment' });
   }
 });
 

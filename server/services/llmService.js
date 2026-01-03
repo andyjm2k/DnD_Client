@@ -401,13 +401,113 @@ PHASE 2: RESOLUTION PHASE (Player provides roll result)
   * Describe what they find (on success) or what happens (on failure)
 - Example: If system says "RESULT: FAILURE", narrate that they don't find anything or miss the clue
 
+ITEM AND LOOT MANAGEMENT:
+- When players discover, receive, or pick up items, they are automatically added to their character inventory
+- Items persist across all campaigns using the same character
+- You can format items in two ways:
+  1. Structured format (preferred): Use [ITEM:item name] or [LOOT:item name] notation
+     - Examples: "You find [ITEM:magic sword] and [ITEM:5 gold pieces]"
+     - For quantities: [ITEM:3 health potions] or [LOOT:10 gold pieces]
+  2. Natural language in sections: Use "Loot:", "Treasure:", or "Reward:" sections
+     - Example: "Loot: sword, shield, 5 gold pieces"
+- Both formats work, but structured format [ITEM:...] is more reliable for automatic detection
+- When players explicitly pick up items (e.g., "I pick up the sword"), the system will detect and add them automatically
+
+DAMAGE AND COMBAT:
+- When characters take damage in combat, use structured format [DAMAGE:X] for reliable automatic detection
+  - Examples: "The orc's blade strikes you for [DAMAGE:5] slashing damage"
+  - For dice damage: "The fireball explodes dealing [DAMAGE:2d6+3] fire damage"
+- You can also use natural language (e.g., "you take 5 damage"), but structured format is preferred
+- Damage is automatically deducted from character hit points
+- When a character reaches 0 HP, they fall unconscious and begin making death saving throws
+- Death saving throws are automatic each combat turn - you don't need to roll them
+- If a character fails 3 death saving throws, they die and the campaign ends
+- If a character succeeds on 3 death saving throws, they stabilize (remain unconscious but no longer dying)
+- A natural 20 on a death saving throw immediately revives the character with 1 HP
+- A natural 1 on a death saving throw counts as 2 failures
+
 Your responses should:
 1. Stay in character as the DM
 2. Enforce D&D 5E rules appropriately
 3. Create engaging and immersive narratives
 4. Respond to player actions fairly
 5. Maintain consistent world details
-6. Request player dice rolls rather than rolling for them, and use [DM_ROLL:...] notation for NPC/DM rolls`;
+6. Request player dice rolls rather than rolling for them, and use [DM_ROLL:...] notation for NPC/DM rolls
+7. Use [ITEM:...] or [LOOT:...] format when giving items to players for reliable inventory tracking
+8. Use [DAMAGE:X] format when dealing damage to players for reliable automatic HP deduction`;
+  }
+
+  // Helper function to calculate ability modifier from score
+  _calculateAbilityModifier(score) {
+    return Math.floor((score - 10) / 2);
+  }
+
+  // Helper function to get skill modifier based on character stats
+  _getSkillModifier(character, skillName) {
+    // Map skill names to ability scores
+    const skillToAbility = {
+      'athletics': 'strength',
+      'acrobatics': 'dexterity',
+      'sleight_of_hand': 'dexterity',
+      'stealth': 'dexterity',
+      'arcana': 'intelligence',
+      'history': 'intelligence',
+      'investigation': 'intelligence',
+      'nature': 'intelligence',
+      'religion': 'intelligence',
+      'animal_handling': 'wisdom',
+      'insight': 'wisdom',
+      'medicine': 'wisdom',
+      'perception': 'wisdom',
+      'survival': 'wisdom',
+      'deception': 'charisma',
+      'intimidation': 'charisma',
+      'performance': 'charisma',
+      'persuasion': 'charisma'
+    };
+
+    // Normalize skill name
+    const normalizedSkill = skillName.toLowerCase().replace(/\s+/g, '_');
+    const ability = skillToAbility[normalizedSkill];
+    
+    if (!ability || !character) {
+      return 0;
+    }
+
+    // Get ability score
+    const abilityScore = character[ability] || 10;
+    const abilityModifier = this._calculateAbilityModifier(abilityScore);
+
+    // Check if character is proficient in this skill
+    const proficiencies = character.proficiencies || [];
+    const isProficient = proficiencies.some(p => 
+      p.type === 'skills' && p.name.toLowerCase().replace(/\s+/g, '_') === normalizedSkill
+    );
+
+    // Calculate proficiency bonus (standard D&D 5E: +2 at level 1-4, +3 at 5-8, etc.)
+    const proficiencyBonus = Math.ceil((character.level || 1) / 4) + 1;
+
+    // Return ability modifier + proficiency bonus if proficient
+    return abilityModifier + (isProficient ? proficiencyBonus : 0);
+  }
+
+  // Helper function to get saving throw modifier
+  _getSavingThrowModifier(character, abilityName) {
+    if (!character) return 0;
+
+    const ability = abilityName.toLowerCase();
+    const abilityScore = character[ability] || 10;
+    const abilityModifier = this._calculateAbilityModifier(abilityScore);
+
+    // Check if character is proficient in this saving throw
+    const proficiencies = character.proficiencies || [];
+    const isProficient = proficiencies.some(p => 
+      p.type === 'savingThrows' && p.name.toLowerCase() === ability
+    );
+
+    const proficiencyBonus = Math.ceil((character.level || 1) / 4) + 1;
+
+    return abilityModifier + (isProficient ? proficiencyBonus : 0);
   }
 
   _buildGameStateContext(campaign, context) {
@@ -416,6 +516,58 @@ Location: ${campaign.currentLocation} - ${campaign.locationDesc}
 Current Quest: ${campaign.currentQuest}
 Combat Active: ${campaign.gameState.combatActive}
 ${campaign.gameState.combatActive ? `Initiative Order: ${campaign.gameState.initiativeOrder}` : ''}`;
+
+    // Add character stats if available
+    if (campaign.character) {
+      const char = campaign.character;
+      const strMod = this._calculateAbilityModifier(char.strength || 10);
+      const dexMod = this._calculateAbilityModifier(char.dexterity || 10);
+      const conMod = this._calculateAbilityModifier(char.constitution || 10);
+      const intMod = this._calculateAbilityModifier(char.intelligence || 10);
+      const wisMod = this._calculateAbilityModifier(char.wisdom || 10);
+      const chaMod = this._calculateAbilityModifier(char.charisma || 10);
+      const proficiencyBonus = Math.ceil((char.level || 1) / 4) + 1;
+
+      contextStr += `\n\nCharacter: ${char.name} (Level ${char.level || 1} ${char.class || ''} ${char.race || ''})
+Status: ${char.status || 'alive'}
+Hit Points: ${char.currentHitPoints || 0}/${char.maxHitPoints || 0}
+Armor Class: ${char.armorClass || 10}
+Ability Scores (Modifiers): 
+  STR ${char.strength || 10} (${strMod >= 0 ? '+' : ''}${strMod}), 
+  DEX ${char.dexterity || 10} (${dexMod >= 0 ? '+' : ''}${dexMod}), 
+  CON ${char.constitution || 10} (${conMod >= 0 ? '+' : ''}${conMod}), 
+  INT ${char.intelligence || 10} (${intMod >= 0 ? '+' : ''}${intMod}), 
+  WIS ${char.wisdom || 10} (${wisMod >= 0 ? '+' : ''}${wisMod}), 
+  CHA ${char.charisma || 10} (${chaMod >= 0 ? '+' : ''}${chaMod})
+Proficiency Bonus: +${proficiencyBonus}`;
+
+      // Add death saving throw info if unconscious
+      if (char.status === 'unconscious') {
+        contextStr += `\nDeath Saving Throws: ${char.deathSavingThrowSuccesses || 0} successes, ${char.deathSavingThrowFailures || 0} failures`;
+        if ((char.deathSavingThrowSuccesses || 0) >= 3) {
+          contextStr += ' (Stabilized - no longer dying)';
+        }
+      }
+
+      // Add equipped items
+      const equippedItems = (char.equipment || []).filter(eq => eq.equipped);
+      if (equippedItems.length > 0) {
+        contextStr += `\nEquipped Items: ${equippedItems.map(eq => eq.item).join(', ')}`;
+      }
+
+      // Add proficiencies summary
+      const proficiencies = char.proficiencies || [];
+      if (proficiencies.length > 0) {
+        const skills = proficiencies.filter(p => p.type === 'skills').map(p => p.name);
+        const savingThrows = proficiencies.filter(p => p.type === 'savingThrows').map(p => p.name);
+        if (skills.length > 0) {
+          contextStr += `\nProficient Skills: ${skills.join(', ')}`;
+        }
+        if (savingThrows.length > 0) {
+          contextStr += `\nProficient Saving Throws: ${savingThrows.join(', ')}`;
+        }
+      }
+    }
 
     // Add skill check result if present
     if (context.success !== undefined) {
@@ -961,6 +1113,86 @@ The scene should:
       type: action.type,
       metadata: {}
     };
+  }
+
+  // Validate if a parsed item is actually a real item that should be added to inventory
+  // Returns true if it's a valid item, false if it's descriptive text or not an item
+  async validateItem(itemName, playerMessage) {
+    // If using mock, do basic validation
+    if (this.useMock) {
+      // Basic heuristics for mock mode
+      const lowerItem = itemName.toLowerCase().trim();
+      // Common non-item phrases that shouldn't be added
+      const nonItemPhrases = [
+        'a closer look', 'closer to', 'a look', 'a glance', 'a peek',
+        'a step', 'a walk', 'a run', 'a jump', 'a turn', 'a move',
+        'a breath', 'a moment', 'a second', 'a minute', 'a while',
+        'the door', 'the window', 'the gate', 'the entrance', 'the exit',
+        'the way', 'the path', 'the road', 'the trail'
+      ];
+      
+      // Check if item name contains any non-item phrases
+      for (const phrase of nonItemPhrases) {
+        if (lowerItem.includes(phrase)) {
+          return false;
+        }
+      }
+      
+      // If it's very short (less than 3 chars) or very long (more than 50 chars), likely not an item
+      if (lowerItem.length < 3 || lowerItem.length > 50) {
+        return false;
+      }
+      
+      // Default to true for mock mode (allow most things)
+      return true;
+    }
+
+    try {
+      // Use LLM to determine if this is actually an item
+      const prompt = `You are a D&D 5E Dungeon Master assistant. Your task is to determine if a parsed text string represents an actual physical item that should be added to a character's inventory, or if it's descriptive text, an action, or something else that should NOT be added to inventory.
+
+Player's original message: "${playerMessage}"
+Parsed item candidate: "${itemName}"
+
+Examples of things that are NOT items and should return false:
+- "a closer look" (descriptive action)
+- "closer to the flickering light" (movement/action)
+- "the door" (referring to examining/interacting with an object, not picking it up)
+- "a step" (movement)
+- "the way" (direction/path)
+- "a moment" (time reference)
+- "the entrance" (location reference)
+
+Examples of things that ARE items and should return true:
+- "sword"
+- "health potion"
+- "gold pieces"
+- "magic ring"
+- "rope"
+- "torch"
+- "rock" (if it's a physical object being picked up)
+
+Consider the context of the player's message. If the player said "I take a closer look", then "a closer look" is NOT an item - it's an action. If they said "I pick up the rock", then "rock" IS an item.
+
+Respond with ONLY "true" or "false" (no quotes, no explanation, just the word).`;
+
+      const response = await this.client.chat.completions.create({
+        model: process.env.OPENAI_API_MODEL || 'gpt-3.5-turbo',
+        messages: [
+          { role: 'system', content: 'You are a D&D 5E assistant that validates whether parsed text represents actual inventory items. Respond with only "true" or "false".' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.1, // Low temperature for consistent validation
+        max_tokens: 10 // Only need true/false
+      });
+
+      const result = response.choices[0].message.content.trim().toLowerCase();
+      return result === 'true';
+    } catch (error) {
+      console.error('Error validating item with LLM:', error);
+      // On error, default to false (don't add potentially invalid items)
+      return false;
+    }
   }
 }
 

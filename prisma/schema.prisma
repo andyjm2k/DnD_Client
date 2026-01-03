@@ -69,6 +69,9 @@ model Character {
   maxHitPoints    Int
   currentHitPoints Int
   armorClass      Int
+  status          String    @default("alive") // alive, unconscious, deceased
+  deathSavingThrowSuccesses Int @default(0)
+  deathSavingThrowFailures  Int @default(0)
   proficiencies   CharacterProficiency[]
   equipment       Equipment[]
   spells          Spell[]
@@ -94,6 +97,7 @@ model Equipment {
   characterId String
   item        String
   quantity    Int
+  equipped    Boolean   @default(false)
   character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
 }
 

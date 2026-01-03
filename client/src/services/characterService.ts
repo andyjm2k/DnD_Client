@@ -21,7 +21,7 @@ interface ServerCharacterData {
   hitPoints: number;
   armorClass: number;
   proficiencies: Array<{ type: string; name: string; }>;
-  equipment: Array<{ item: string; quantity: number; }>;
+  equipment: Array<{ id?: string; item: string; quantity: number; equipped?: boolean; }>;
   features: Array<{ name: string; description: string; source: string; }>;
   backstory: string;
 }
@@ -127,8 +127,19 @@ const transformServerToClient = (serverData: any): Character => {
     },
     armorClass: serverData.armorClass || 10,
     speed: serverData.speed || 30,
-    proficiencyBonus: serverData.proficiencyBonus || 2,
+    // Calculate proficiency bonus using D&D 5E rules: +2 at level 1-4, +3 at 5-8, etc.
+    proficiencyBonus: serverData.proficiencyBonus || Math.ceil((serverData.level || 1) / 4) + 1,
     backstory: serverData.backstory || '',
+    status: serverData.status || 'alive',
+    deathSavingThrowSuccesses: serverData.deathSavingThrowSuccesses || 0,
+    deathSavingThrowFailures: serverData.deathSavingThrowFailures || 0,
+    equipment: serverData.equipment?.map((eq: any) => ({
+      id: eq.id,
+      item: eq.item,
+      quantity: eq.quantity,
+      equipped: eq.equipped || false
+    })) || [],
+    proficiencies: serverData.proficiencies || [],
   };
 };
 
@@ -202,6 +213,16 @@ export const characterService = {
       return response.data;
     } catch (error) {
       console.error('Error deleting character:', error);
+      throw error;
+    }
+  },
+
+  async toggleEquipment(characterId: string, equipmentId: string) {
+    try {
+      const response = await axios.patch(`${API_URL}/${characterId}/equipment/${equipmentId}`);
+      return response.data;
+    } catch (error) {
+      console.error('Error toggling equipment:', error);
       throw error;
     }
   }
